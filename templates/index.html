@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>约牛聊天室{% if room_id %} · {{ room_id }}{% endif %}</title>
+<style>
+:root {
+  --bg: #f5f5f5; --card: #ffffff; --border: #e0e0e0;
+  --text: #333; --muted: #888; --accent: #d4380d;
+  --teacher: #d4380d; --teacher-bg: #fff7f2;
+  --me: #1da157; --me-bg: #f0fff4;
+  --dm: #722ed1; --dm-bg: #f9f0ff;
+  --hover: #f0f7ff;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+       background: var(--bg); color: var(--text); font-size: 14px; }
+
+/* ===== 顶部栏 ===== */
+.topbar { background: var(--card); border-bottom: 1px solid var(--border);
+  padding: 8px 16px; display: flex; align-items: center; gap: 10px;
+  position: sticky; top: 0; z-index: 100; flex-wrap: wrap; }
+.topbar .title { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.topbar .room-name { color: var(--accent); font-weight: 600; max-width: 300px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.topbar button, .topbar .btn { padding: 4px 12px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--card); cursor: pointer; font-size: 13px; white-space: nowrap; }
+.topbar button:hover { background: var(--hover); border-color: var(--accent); }
+.topbar button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.topbar .spacer { flex: 1; }
+.topbar .cal-group { display: flex; align-items: center; gap: 4px; }
+.topbar .cal-group .lbl { font-size: 12px; color: var(--muted); }
+.topbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+.topbar input[type="date"] { padding: 3px 6px; border: 1px solid var(--border);
+  border-radius: 4px; font-size: 13px; }
+.topbar .cal-group button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.topbar .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+.dot.on { background: var(--me); box-shadow: 0 0 0 3px rgba(29,161,87,.15); }
+.dot.err { background: #f5222d; }
+.dot.warn { background: #faad14; }
+.warn-banner { display: none; background: #fffbe6; border-bottom: 1px solid #ffe58f;
+  color: #874d00; font-size: 13px; padding: 6px 16px; }
+.warn-banner.show { display: block; }
+.warn-banner a { color: var(--accent); cursor: pointer; text-decoration: underline; }
+
+/* 同步进度条 */
+.sync-bar { display: none; background: #f0f5ff; border-bottom: 1px solid #d6e4ff;
+  font-size: 12px; color: #1d39c4; }
+.sync-bar.show { display: block; }
+.sync-bar-inner { display: flex; align-items: center; gap: 10px; padding: 5px 16px; }
+.sync-progress { flex: 1; height: 4px; background: #d6e4ff; border-radius: 2px; overflow: hidden;
+  min-width: 80px; }
+.sync-progress i { display: block; height: 100%; width: 0%; background: #1d39c4;
+  transition: width .25s; }
+.sync-bar button { padding: 1px 8px; border: 1px solid #adc6ff; background: #fff;
+  border-radius: 3px; cursor: pointer; font-size: 12px; }
+
+/* 顶部加载更早 / 底部到底提示 */
+.list-top-hint { text-align: center; color: var(--muted); font-size: 12px; padding: 8px; }
+.list-top-hint button { padding: 3px 14px; border: 1px solid var(--border);
+  border-radius: 12px; background: var(--card); cursor: pointer; font-size: 12px; }
+
+/* ===== 主布局 ===== */
+.main { display: flex; gap: 1px; height: calc(100vh - 49px); }
+.main.with-banner { height: calc(100vh - 49px - 30px); }
+.col { background: var(--card); display: flex; flex-direction: column; overflow: hidden; }
+.col-left { width: 34%; min-width: 300px; border-right: 1px solid var(--border); }
+.col-right { flex: 1; position: relative; }
+.col-header { padding: 8px 12px; border-bottom: 1px solid var(--border); font-weight: 600;
+  display: flex; align-items: center; gap: 8px; background: #fafafa; font-size: 13px; }
+.col-header .count { color: var(--muted); font-weight: 400; font-size: 12px; }
+.col-header .clear-btn { padding: 2px 10px; font-size: 12px; border: 1px solid var(--accent);
+  color: var(--accent); background: var(--card); border-radius: 4px; cursor: pointer; display: none; margin-left: auto; }
+.col-header .clear-btn.show { display: inline-block; }
+
+/* ===== 消息 ===== */
+.msg-list { flex: 1; overflow-y: auto; padding: 4px 0; }
+.msg { padding: 7px 12px; display: flex; gap: 8px; border-bottom: 1px solid #f6f6f6;
+  content-visibility: auto;
+  /* contain-intrinsic-size 先给固定估算（旧浏览器兼容），
+     再给 auto 版本（现代浏览器会记住真实高度）；
+     不这样做的话滚动时估算值被真实高度替换，scrollHeight 反复变 → 滚动条抽搯 */
+  contain-intrinsic-size: 0 64px;
+  contain-intrinsic-size: auto 64px; }
+.msg:hover { background: var(--hover); }
+.msg.teacher { background: var(--teacher-bg); }
+.msg.teacher:hover { background: #ffefe5; }
+.msg.dm { background: var(--dm-bg); }
+.msg.is-new { animation: hl 1.6s ease; }@keyframes hl { 0% { background: #ffe58f; } 100% { background: transparent; } }
+.msg .avatar { width: 36px; height: 36px; border-radius: 5px; flex-shrink: 0;
+  object-fit: cover; background: #eee; cursor: pointer; }
+.msg .avatar-ph { width: 36px; height: 36px; border-radius: 5px; flex-shrink: 0;
+  background: #e8e8e8; display: flex; align-items: center; justify-content: center;
+  color: #999; font-size: 14px; font-weight: 500; }
+.msg .body { flex: 1; min-width: 0; }
+.msg .meta { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; flex-wrap: wrap; }
+.msg .nick { font-weight: 600; color: #1890ff; cursor: pointer; }
+.msg .nick.teacher-name { color: var(--teacher); }
+.msg .nick:hover { text-decoration: underline; }
+.msg .yn { font-size: 11px; color: #bbb; }
+.msg .time { font-size: 11px; color: var(--muted); }
+.msg .tag { font-size: 10px; padding: 0 4px; border-radius: 2px; color: #fff; background: #1890ff; }
+.msg .tag.t { background: var(--teacher); }
+.msg .tag.r { background: #fa8c16; }
+.msg .tag.p { background: #8c8c8c; }
+.msg .alias-badge { font-size: 10px; background: #ffd666; color: #874d00;
+  border-radius: 3px; padding: 0 3px; font-weight: 400; }
+.msg .quote { font-size: 12px; color: var(--muted); background: #f5f5f5;
+  border-left: 3px solid var(--border); padding: 3px 8px; margin: 2px 0 4px;
+  border-radius: 0 3px 3px 0; cursor: pointer; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.msg .quote .q-nick { color: var(--accent); font-weight: 500; }
+.msg .content { word-break: break-word; line-height: 1.65; white-space: pre-wrap; }
+.msg .content mark { background: #fff3a0; padding: 0 1px; border-radius: 2px; }
+
+/* msgType=2 文章推送卡片 */
+.msg .article-card { display: inline-flex; gap: 10px; max-width: 380px; margin: 3px 0;
+  padding: 8px 10px; border: 1px solid #ffd8bf; border-left: 3px solid var(--teacher);
+  border-radius: 5px; background: #fffaf7; }
+.msg .article-card .ac-img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px;
+  flex-shrink: 0; cursor: zoom-in; }
+.msg .article-card .ac-body { min-width: 0; }
+.msg .article-card .ac-tag { display: inline-block; font-size: 10px; color: #fff;
+  background: var(--teacher); border-radius: 2px; padding: 0 4px; margin-bottom: 3px; }
+.msg .article-card .ac-title { font-weight: 600; font-size: 13px; color: #ad2102;
+  word-break: break-all; }
+.msg .article-card .ac-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.msg .content .imgwrap { display: inline-block; max-width: 240px; margin: 3px 0; }
+.msg .content img.msgimg { display: block; max-width: 240px; max-height: 320px;
+  border-radius: 5px; cursor: zoom-in; background: #f0f0f0; }
+.msg .content img.msgimg.loading { min-width: 120px; min-height: 90px; }
+.msg.teacher .content { font-weight: 500; }
+
+/* 日期分隔条：两条细线中间夹日期，一眼能看出读到哪天了 */
+.day-sep { display: flex; align-items: center; gap: 10px; margin: 12px 14px 4px;
+  font-size: 12px; color: var(--muted); }
+.day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.day-sep span { white-space: nowrap; }
+
+/* 曾用名弹窗 */
+.nick-popup { position: fixed; background: var(--card); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; min-width: 180px; max-width: 320px;
+  box-shadow: 0 3px 12px rgba(0,0,0,.15); z-index: 9999; font-size: 12px; }
+.nick-popup .pp-title { font-weight: 600; margin-bottom: 4px; color: var(--muted); }
+.nick-popup .pp-item { padding: 2px 0; display: flex; gap: 8px; }
+.nick-popup .pp-time { color: var(--muted); font-size: 11px; margin-left: auto; }
+
+/* 搜索区 */
+.search-box { padding: 8px 12px; background: #fafafa; border-bottom: 1px solid var(--border); }
+.search-box .row { display: flex; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; align-items: center; }
+.search-box input { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 13px; }
+.search-box input[type="text"] { flex: 1; min-width: 120px; }
+.search-box button { padding: 3px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); cursor: pointer; font-size: 13px; }
+.search-box button:hover { background: var(--hover); border-color: var(--accent); }
+.quick-times { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.quick-times button { padding: 2px 8px; font-size: 12px; }
+
+/* 图片放大 */
+.lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9);
+  z-index: 9999; justify-content: center; align-items: center; overflow: hidden; }
+.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 4px;
+  transform-origin: center center; cursor: grab; user-select: none; -webkit-user-drag: none; }
+.lightbox img.dragging { cursor: grabbing; }
+.lightbox-hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,.6); font-size: 12px; pointer-events: none; }
+
+/* 弹窗通用 */
+.modal { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4);
+  z-index: 9000; justify-content: center; align-items: center; }
+.modal .box { background: var(--card); border-radius: 8px; padding: 20px 24px;
+  max-width: 460px; width: 92%; max-height: 84vh; overflow-y: auto;
+  box-shadow: 0 4px 24px rgba(0,0,0,.2); }
+.modal h3 { margin-bottom: 14px; font-size: 16px; }
+.modal .field { margin-bottom: 12px; }
+.modal .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.modal .field input, .modal .field textarea { width: 100%; padding: 7px 10px;
+  border: 1px solid var(--border); border-radius: 4px; font-size: 13px; font-family: inherit; }
+.modal .field textarea { min-height: 70px; resize: vertical; word-break: break-all; }
+.modal .field input:focus, .modal .field textarea:focus { outline: none; border-color: var(--accent); }
+.modal .hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.modal .msg { font-size: 12px; min-height: 16px; margin: 6px 0; color: var(--accent); }
+.modal .msg.ok { color: var(--me); }
+.modal .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.modal .actions button { padding: 7px 18px; border: 1px solid var(--border); border-radius: 4px;
+  background: var(--card); cursor: pointer; font-size: 13px; }
+.modal .actions .primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.modal .actions button:disabled { opacity: .5; cursor: not-allowed; }
+.modal table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.modal th, .modal td { padding: 4px 8px; text-align: right; border-bottom: 1px solid #f0f0f0; }
+.modal th { color: var(--muted); font-weight: 400; }
+.modal th:first-child, .modal td:first-child { text-align: left; }
+.modal .kv { font-size: 13px; line-height: 1.9; }
+.modal .kv b { color: var(--muted); font-weight: 400; display: inline-block; min-width: 84px; }
+
+/* 新消息提示 */
+.new-msg-hint { position: absolute; bottom: 96px; right: 14px; background: var(--accent);
+  color: #fff; padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 13px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2); display: none; z-index: 10; }
+
+/* 发送区 */
+.send-box { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; align-items: center;
+  border-top: 1px solid var(--border); background: var(--card); }
+.send-box .img-preview { display: none; width: 100%; flex-wrap: wrap; gap: 6px; }
+.send-box .img-preview.show { display: flex; }
+.send-box .img-preview .thumb { position: relative; width: 72px; height: 72px; border-radius: 4px;
+  border: 1px solid var(--border); overflow: hidden; }
+.send-box .img-preview .thumb img { width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.send-box .img-preview .thumb .rm { position: absolute; top: 1px; right: 1px; width: 16px; height: 16px;
+  line-height: 14px; text-align: center; border-radius: 50%; background: rgba(0,0,0,.55);
+  color: #fff; font-size: 11px; cursor: pointer; }
+.send-box .upload-btn { cursor: pointer; font-size: 18px; user-select: none; padding: 2px 4px; border-radius: 4px; }
+.send-box .upload-btn:hover { background: var(--hover); }
+.send-box .upload-btn.uploading { opacity: .4; cursor: wait; }
+.send-box textarea { flex: 1; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 13px; font-family: inherit; resize: none; overflow-y: auto; line-height: 1.5;
+  max-height: 7.5em; min-height: 2em; }
+.send-box textarea:focus { outline: none; border-color: var(--accent); }
+.send-box button { padding: 6px 18px; border: none; border-radius: 4px; background: var(--accent);
+  color: #fff; cursor: pointer; font-size: 13px; white-space: nowrap; }
+.send-box button:disabled { opacity: .5; cursor: not-allowed; }
+.loading { padding: 20px; text-align: center; color: var(--muted); }
+.empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.9; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="title">📌 约牛聊天室</span>
+  <span class="room-name" id="roomName">{{ room_id and ('#' + room_id|string) or '' }}</span>
+  <span class="cal-group">
+    <span class="lbl">日期</span>
+    <input type="date" id="datePicker" onchange="onDatePick()">
+    <button onclick="shiftDay(-1)" title="前一天">◀ 前一天</button>
+    <button onclick="loadToday()" id="todayBtn">今天</button>
+    <button onclick="shiftDay(1)" title="后一天">后一天 ▶</button>
+  </span>
+  <span class="sep"></span>
+  <button onclick="setRange(3)" data-range="3">近3天</button>
+  <button onclick="setRange(7)" data-range="7">近7天</button>
+  <button onclick="setRange(0)" data-range="0">全部</button>
+  <span class="spacer"></span>
+  <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
+  <button onclick="syncMore()">📥 同步最新</button>
+  <button onclick="syncFull()" id="fullSyncBtn">⏬ 全量同步</button>
+  <button onclick="openSettings()">⚙️ 鉴权/设置</button>
+  <button onclick="backupDB()">💾 备份</button>
+  <button onclick="showStats()">📊 统计</button>
+</div>
+<div class="sync-bar" id="syncBar">
+  <div class="sync-bar-inner">
+    <span id="syncText">同步中…</span>
+    <div class="sync-progress"><i id="syncFill"></i></div>
+    <button onclick="loadMessages()">停止刷新</button>
+  </div>
+</div>
+<div class="warn-banner" id="warnBanner"></div>
+
+<div class="main" id="main">
+  <!-- 左栏：老师观点 -->
+  <div class="col col-left">
+    <div class="col-header">
+      <span>🎓 老师观点</span>
+      <span class="count" id="teacherCount">0 条</span>
+    </div>
+    <div class="msg-list" id="teacherList">
+      <div class="loading">加载中…</div>
+    </div>
+  </div>
+
+  <!-- 右栏：全部消息 -->
+  <div class="col col-right">
+    <div class="search-box">
+      <div class="row">
+        <input type="text" id="searchInput" placeholder="🔍 搜索消息关键词…"
+               onkeydown="if(event.key==='Enter')doSearch()">
+        <input type="text" id="userIdInput" placeholder="用户ID" style="width:88px">
+        <button onclick="doSearch()">搜索</button>
+        <button onclick="clearSearch()">清除</button>
+        <span style="color:var(--muted);font-size:12px">日期</span>
+        <input type="date" id="searchStart" style="width:130px">
+        <span>~</span>
+        <input type="date" id="searchEnd" style="width:130px">
+      </div>
+      <div class="row quick-times">
+        <span style="color:var(--muted);font-size:12px">快捷定位</span>
+        <button onclick="jumpTo('09:15')">9:15 集合竞价</button>
+        <button onclick="jumpTo('09:30')">9:30 早盘</button>
+        <button onclick="jumpTo('11:30')">11:30 午间</button>
+        <button onclick="jumpTo('13:00')">13:00 午后</button>
+        <button onclick="jumpTo('14:30')">14:30 尾盘</button>
+        <button onclick="jumpTo('00:00')">回到顶部</button>
+        <button onclick="scrollToBottom()">回到底部</button>
+      </div>
+    </div>
+    <div class="col-header">
+      <span id="allCount">全部 0 条</span>
+      <span class="count" id="rangeHint"></span>
+      <button class="clear-btn" id="clearBtn" onclick="clearSearch()">✕ 返回全部</button>
+    </div>
+    <div class="msg-list" id="allList">
+      <div class="loading">加载中…</div>
+    </div>
+    <div class="new-msg-hint" id="newMsgHint" onclick="scrollToBottom()">
+      ↓ <span id="newMsgCount">0</span> 条新消息
+    </div>
+    <div class="send-box">
+      <div class="img-preview" id="imagePreview"></div>
+      <label class="upload-btn" id="uploadBtn">📎
+        <input type="file" accept="image/*" id="fileInput" hidden onchange="uploadFile(this)">
+      </label>
+      <textarea id="sendInput" rows="1" maxlength="2000"
+        placeholder="发条消息…（Enter 发送，Shift+Enter 换行，⌘V 粘贴图片）"
+        oninput="autoGrow(this)" onkeydown="onSendKeydown(event)"></textarea>
+      <button id="sendBtn" onclick="sendMsg()">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- 图片放大 -->
+<div class="lightbox" id="lightbox">
+  <img id="lightboxImg" src="" alt="">
+  <div class="lightbox-hint">Ctrl/⌘+滚轮缩放 · 滚轮上下移动 · 拖动移动 · 双击复位 · 点击空白关闭</div>
+</div>
+
+<!-- 设置弹窗 -->
+<div class="modal" id="settingsModal" onclick="if(event.target===this)closeSettings()">
+  <div class="box">
+    <h3>⚙️ 鉴权与设置</h3>
+    <div class="hint">
+      <b>centraltoken</b>：从微信小程序抓包取得（协议文档 §2 ⑤），失效后业务接口返回
+      <code>200001</code>，需重新抓取。<br>
+      <b>userSig</b>：由 <code>chatroom/getUserSig.htm</code> 下发，腾讯云 IM 用，有效期通常 60 天，
+      有了它即使 centraltoken 过期也能继续收实时消息。<br>
+      勾选「保存后自动探测」可一次性把房间信息、IM 凭证、我的资料全部拉下来。
+    </div>
+    <div class="field">
+      <label>centraltoken</label>
+      <textarea id="setToken" placeholder="三段逗号分隔的长串（SXQd...…）"></textarea>
+    </div>
+    <div class="field">
+      <label>teacherId（老师 ID，默认 328）</label>
+      <input type="text" id="setTeacher" placeholder="328">
+    </div>
+    <div class="field">
+      <label>userSig（可选，留空则只更新上面两项）</label>
+      <textarea id="setSig" placeholder="eJyrVgrxCdZ..."></textarea>
+    </div>
+    <div class="field">
+      <label>IM identifier（形如 cu_1234567）</label>
+      <input type="text" id="setIdent" placeholder="cu_">
+    </div>
+    <div class="field">
+      <label>IM sdkAppId</label>
+      <input type="text" id="setSdk" placeholder="1600075223">
+    </div>
+    <div class="field">
+      <label>IM 群号（imGroupId）</label>
+      <input type="text" id="setGroup" placeholder="@TGS#_@TGS#...">
+    </div>
+    <div class="msg" id="setMsg"></div>
+    <div class="actions">
+      <button onclick="closeSettings()">取消</button>
+      <button onclick="probeIm()">测试 IM 凭证</button>
+      <button class="primary" id="probeBtn" onclick="saveAndProbe()">保存并探测</button>
+    </div>
+  </div>
+</div>
+
+<!-- 统计弹窗 -->
+<div class="modal" id="statsModal" onclick="if(event.target===this)closeStats()">
+  <div class="box">
+    <h3>📊 数据概览</h3>
+    <div class="kv" id="statsKv"></div>
+    <table>
+      <thead><tr><th>日期</th><th>老师</th><th>全部</th></tr></thead>
+      <tbody id="statsTable"></tbody>
+    </table>
+    <div class="actions"><button class="primary" onclick="closeStats()">关闭</button></div>
+  </div>
+</div>
+
+<script>
+const INIT_ROOM = "{{ room_id|string if room_id else '' }}";
+const TODAY = new Date();
+
+// ===================== 全局状态 =====================
+let allMessages = [];
+let teacherMessages = [];
+let searchMode = false;
+let searchKeyword = "";
+let myUserId = "";
+let ws = null;
+let wsRetry = 0;
+let pendingNew = 0;
+let stickToBottom = true;
+let currentRangeDays = 0;         // 0 = 全部
+let currentDay = "";              // 非空 = 正在通读某一天
+let hasMoreHistory = false;       // 上面还有更早的消息
+let oldestLoadedId = 0;           // 当前已加载的最旧消息 id（向历史翻页的游标）
+let loadingOlder = false;
+const seenKeys = new Set();
+const avatarCache = {};
+const nickCountCache = {};
+const MSG_BATCH = 200;
+const RENDER_ALL_MAX = 4000;       // 一次性能直接渲染的上限（一天 3136 条 → 一次渲染完，不再分批贴底）
+const PAGE_LOAD = 1200;           // 范围模式首屏条数（最新优先）
+const PAGE_OLDER = 1000;          // 每次向内加载更早的条数
+const _renderStates = new Map();   // listId -> { msgs, list, index, observer, kw }
+
+// ===================== 工具 =====================
+function esc(s) {
+  return (s == null ? "" : String(s))
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function fmtTime(dt) {
+  if (!dt) return "";
+  const p = dt.split(" ");
+  return p[1] || dt;
+}
+function fmtDateTime(dt) { return dt || ""; }
+function mediaUrl(u, kind) {
+  if (!u) return "";
+  return `/api/media?kind=${kind || "image"}&u=${encodeURIComponent(u)}`;
+}
+function avatarUrl(m) {
+  const a = m.avatar_url || (m.raw && m.raw.avatarUrl) || "";
+  return a ? mediaUrl(a, "avatar") : "";
+}
+function firstChar(s) { return esc((s || "?").trim()[0] || "?"); }
+const WEEK = ["日", "一", "二", "三", "四", "五", "六"];
+function dayLabel(d) {
+  const p = (d || "").split("-");
+  if (p.length < 3) return d || "";
+  const w = WEEK[new Date(d + "T12:00:00").getDay()] || "";
+  return `${p[0]} 年 ${Number(p[1])} 月 ${Number(p[2])} 日 · 星期${w}`;
+}
+
+/** 跨天时插一条日期分隔（聊天记录必需，否则只有时刻认不出是哪天） */
+function appendDaySep(frag, date, state) {
+  if (!date || state.lastDate === date) return;
+  state.lastDate = date;
+  const el = document.createElement("div");
+  el.className = "day-sep";
+  el.dataset.day = date;
+  const s = document.createElement("span");
+  s.textContent = dayLabel(date);
+  el.appendChild(s);
+  frag.appendChild(el);
+}
+
+function msgKey(m) {
+  if (m.id) return "id:" + m.id;
+  if (m.im_msg_seq) return "seq:" + m.im_msg_seq;
+  return "t:" + (m.msg_date || "") + ":" + (m.nick_name || "") + ":" + (m.msg_content || "").slice(0, 40);
+}
+function autoGrow(el) {
+  el.style.height = "auto";
+  el.style.height = Math.min(el.scrollHeight, 150) + "px";
+}
+function parseRange(sel) { return sel ? sel.replace(/-/g, "") : ""; }
+
+// ===================== 消息渲染 =====================
+/** msgType=2：文章推送卡片。
+ *  msg_content = {title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}
+ *  sourceUrl 是小程序内的 H5 路径（/touguapp/tougu/index.html?path=/articleDetail...），
+ *  实测在 www.zx0093.com / ht.zx0093.com / app.zx093.cn 都是 404，只能在微信小程序里打开，
+ *  所以只展示卡片，不做可点链接（悬停标题可以看到原始路径）。
+ */
+function renderArticle(m) {
+  let a = {};
+  try {
+    a = typeof m.msg_content === "string" ? JSON.parse(m.msg_content || "{}")
+                                           : (m.msg_content || {});
+  } catch (e) { a = {}; }
+  const title = a.title || a.brief || "";
+  if (!title) return `<span style="color:var(--muted)">[文章]</span>`;
+  const img = a.mainImageUrl ? mediaUrl(a.mainImageUrl, "image") : "";
+  const meta = [a.sourceTime ? String(a.sourceTime).slice(0, 16) : "",
+                a.sourceId ? "文章 #" + a.sourceId : ""].filter(Boolean).join(" · ");
+  return `<div class="article-card" title="${esc(a.sourceUrl || "")}">
+      ${img ? `<img class="ac-img" src="${img}" loading="lazy" onclick="openLightbox('${img}')">` : ""}
+      <div class="ac-body">
+        ${a.brief ? `<span class="ac-tag">${esc(a.brief)}</span>` : ""}
+        <div class="ac-title">${esc(title)}</div>
+        <div class="ac-meta">${esc(meta)}</div>
+      </div>
+    </div>`;
+}
+
+function renderContent(m, kw) {
+  // msgType: 0=文本 1=图片 2=文章推送卡片（老师发的早盘预案/知识点小结）
+  if (m.msg_type === 2) return renderArticle(m);
+  if (m.msg_type === 1) {
+    const img = m.image || {};
+    let url = img.url || "";
+    if (!url) { try { url = JSON.parse(m.msg_content || "{}").imgUrl || ""; } catch (e) {} }
+    if (!url) return '<span style="color:var(--muted)">[图片]</span>';
+    const w = img.width || 0, h = img.height || 0;
+    const box = (w && h) ? `style="aspect-ratio:${w}/${h}"` : "";
+    const src = mediaUrl(url, "image");
+    return `<span class="imgwrap"><img class="msgimg loading" ${box} src="${src}" loading="lazy"
+              onclick="openLightbox('${src}')" onload="this.classList.remove('loading');onImgLoad(this)"
+              onerror="this.classList.remove('loading');this.alt='[图片加载失败]';onImgLoad(this)"></span>`;
+  }
+  let text = m.msg_content || "";
+  if (m.msg_type !== 0 && m.msg_type !== "0" && m.msg_type != null && m.msg_type !== "") {
+    // 未知类型（语音/视频等）不要直接把原始 JSON 倒到界面上
+    return `<span style="color:var(--muted)">[不支持的消息类型 ${esc(String(m.msg_type))}]</span>`;
+  }
+  if (kw) {
+    const re = new RegExp(kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+    text = esc(text).replace(re, s => `<mark>${s}</mark>`);
+    return text;
+  }
+  return esc(text);
+}
+
+function renderMsg(m, frag, kw) {
+  const isTeacher = m.user_type === 4;
+  const div = document.createElement("div");
+  div.className = "msg" + (isTeacher ? " teacher" : "");
+  div.dataset.mid = msgKey(m);
+  div.dataset.uid = m.user_id || "";
+  div.dataset.ts = m.ts || 0;
+
+  const av = avatarUrl(m);
+  const avatarHtml = av
+    ? `<img class="avatar" src="${av}" loading="lazy"
+         onclick="openLightbox('${av}')"
+         onerror="this.outerHTML='<div class=&quot;avatar-ph&quot;>${firstChar(m.nick_name)}</div>'">`
+    : `<div class="avatar-ph">${firstChar(m.nick_name)}</div>`;
+
+  // 只保留数据上站得住的标记：
+  //   老师   = user_type=4
+  //   审核中 = auditStatus=0（仅 REST 权威数据会给出 0）
+  // 不再显示“实时/VIP/私聊回复”：前两个字段在 IM 推送里是审核前的占位值
+  // （实测 REST 里 14299 条全是 0），真正的“老师回复某人”信号是 toUserId>0。
+  const tags = [];
+  if (isTeacher) tags.push('<span class="tag t">老师</span>');
+  if (isTeacher && m.to_user_id > 0) tags.push('<span class="tag r">回复</span>');
+  if (m.audit_status === 0) tags.push('<span class="tag p">审核中</span>');
+
+  const alias = nickCountCache[m.user_id] > 1 ? '<span class="alias-badge">曾</span>' : "";
+  const quote = m.quote
+    ? `<div class="quote" onclick="jumpToMessage('${esc(String(m.quote.id || ""))}')">
+         <span class="q-nick">${esc(m.quote.nickName || "")}</span>：
+         ${esc(m.quote.msgType === 1 ? "[图片]" : (m.quote.msgContent || "").slice(0, 60))}</div>`
+    : "";
+
+  div.innerHTML = `
+    ${avatarHtml}
+    <div class="body">
+      <div class="meta">
+        <span class="nick ${isTeacher ? "teacher-name" : ""}"
+              onclick="filterByUser(${m.user_id || 0}, '${esc(m.nick_name || "")}')"
+              onmouseenter="showNickInfo(event, ${m.user_id || 0})"
+              onmouseleave="hideNickInfo()"
+              title="点击只看 TA 的发言">${esc(m.nick_name || "匿名")}${alias}</span>
+        ${m.yn_no ? `<span class="yn">${esc(m.yn_no)}</span>` : ""}
+        ${tags.join("")}
+        <span class="time">${searchMode ? fmtDateTime(m.msg_date) : fmtTime(m.msg_date)}</span>
+      </div>
+      ${quote}
+      <div class="content">${renderContent(m, kw)}</div>
+    </div>`;
+  frag.appendChild(div);
+}
+
+function renderMessages(msgs, list, kw, followBottom) {
+  const key = list.id;
+  const old = _renderStates.get(key);
+  if (old && old.observer) { old.observer.disconnect(); _renderStates.delete(key); }
+  list.innerHTML = "";
+  if (!msgs.length) {
+    list.innerHTML = `<div class="empty">暂无消息<br>
+      <span style="font-size:12px">配置 centraltoken 后点「⏬ 全量同步」拉取线上消息</span></div>`;
+    return;
+  }
+  // 条数不多就一次性渲染完，然后直接贴底。
+  // 以前一律分批 + “每批贴底”，在真实浏览器里不可靠：
+  // .msg 用了 content-visibility:auto，scrollHeight 只是按 contain-intrinsic-size 的估算，
+  // 贴底后元素真实高度生效→ scrollHeight 又变，于是停在中间（看到了早盘的 06:31）。
+  if (msgs.length <= RENDER_ALL_MAX) {
+    const frag = document.createDocumentFragment();
+    const state = { lastDate: "" };
+    msgs.forEach(m => {
+      appendDaySep(frag, (m.msg_date || "").slice(0, 10), state);
+      renderMsg(m, frag, kw);
+    });
+    list.appendChild(frag);
+    loadNickCounts();
+    if (followBottom) pinToBottom(list);
+    return;
+  }
+  _renderStates.set(key, { msgs, list, index: 0, observer: null, kw, lastDate: "",
+                           followBottom: !!followBottom });
+  _renderBatch(key);
+}
+
+/** 贴到底部，并在懒渲染/图片撑开后再确认几次。只应在“加载完成/用户主动”时调用一次。
+ *  注意：**不能**用 stickToBottom 做前置判断 —— 清空列表时浏览器夹回 scrollTop
+ *  会触发一次 scroll 事件，监听器会把 stickToBottom 置 false，贴底就永远不执行了。
+ */
+const _pinning = { allList: false, teacherList: false };
+const _follow = { allList: false, teacherList: false };   // 各栏各自的“是否跟随底部”
+
+function pinToBottom(list) {
+  if (!list) return;
+  const id = list.id;
+  _pinning[id] = true;
+  const jump = () => { list.scrollTop = list.scrollHeight; };
+  jump();
+  requestAnimationFrame(jump);
+  setTimeout(jump, 60);
+  setTimeout(() => {
+    jump();
+    _follow[id] = true;
+    _pinning[id] = false;
+    if (id === "allList") {
+      stickToBottom = true;
+      pendingNew = 0;
+      document.getElementById("newMsgHint").style.display = "none";
+    }
+  }, 260);
+}
+
+function _renderBatch(key) {
+  const st = _renderStates.get(key);
+  if (!st) return;
+  const { msgs, list, kw } = st;
+  const end = Math.min(st.index + MSG_BATCH, msgs.length);
+  const frag = document.createDocumentFragment();
+  for (let i = st.index; i < end; i++) {
+    appendDaySep(frag, (msgs[i].msg_date || "").slice(0, 10), st);
+    renderMsg(msgs[i], frag, kw);
+  }
+  list.appendChild(frag);
+  st.index = end;
+  loadNickCounts();
+  if (st.index >= msgs.length) {
+    // 全部渲染完：把最后一批也贴到底，并收回状态（否则滚动加载更早会一直不触发）
+    st.followBottom = false;
+    if (st.observer) { st.observer.disconnect(); st.observer = null; }
+    _renderStates.delete(key);
+    if (list.id === "allList") pinToBottom(list);
+    return;
+  }
+  const sentinel = document.createElement("div");
+  sentinel.className = "render-sentinel";
+  sentinel.style.height = "1px";
+  list.appendChild(sentinel);
+  if (!st.observer) {
+    st.observer = new IntersectionObserver(es => {
+      for (const e of es) {
+        if (!e.isIntersecting) continue;
+        e.target.remove();
+        st.observer && st.observer.unobserve(e.target);
+        if (_renderStates.get(key) === st) _renderBatch(key);
+      }
+    }, { root: list, rootMargin: "800px" });
+  }
+  st.observer.observe(sentinel);
+}
+
+// ===================== 头像/曾用名 =====================
+async function loadNickCounts() {
+  const need = new Set();
+  document.querySelectorAll(".msg[data-uid]").forEach(el => {
+    const uid = el.dataset.uid;
+    if (uid && uid !== "0" && nickCountCache[uid] === undefined) need.add(uid);
+  });
+  if (!need.size) return;
+  const uids = Array.from(need);
+  try {
+    const r = await fetch(`/api/users/batch?uids=${encodeURIComponent(uids.join(","))}`);
+    const data = await r.json();
+    for (const uid of uids) nickCountCache[uid] = (data[uid] && data[uid].nick_count) || 1;
+  } catch (e) {
+    for (const uid of uids) nickCountCache[uid] = 1;
+  }
+  document.querySelectorAll(".msg[data-uid]").forEach(el => {
+    const uid = el.dataset.uid;
+    const nick = el.querySelector(".nick");
+    if (!nick || nick.querySelector(".alias-badge")) return;
+    if (nickCountCache[uid] > 1) {
+      const b = document.createElement("span");
+      b.className = "alias-badge";
+      b.textContent = "曾";
+      nick.appendChild(b);
+    }
+  });
+}
+
+let _nickTimer = null;
+async function showNickInfo(ev, uid) {
+  if (!uid) return;
+  clearTimeout(_nickTimer);
+  _nickTimer = setTimeout(async () => {
+    try {
+      const r = await fetch(`/api/users/${uid}`);
+      const d = await r.json();
+      hideNickInfo();
+      const el = document.createElement("div");
+      el.className = "nick-popup";
+      el.id = "nickPopup";
+      const nicks = (d.nicknames || []).slice(0, 8).map(n =>
+        `<div class="pp-item"><span>${esc(n.nick_name)}</span>
+         <span class="pp-time">${esc((n.last_seen || "").slice(0, 10))}</span></div>`).join("");
+      el.innerHTML = `<div class="pp-title">${esc(d.nick_name || "")}
+          ${d.yn_no ? "· " + esc(d.yn_no) : ""} · 共 ${d.msg_count || 0} 条</div>
+        ${(d.nicknames || []).length > 1 ? '<div class="pp-title">曾用名</div>' + nicks : ""}
+        ${d.avatar_url ? `<div style="margin-top:6px"><img src="${mediaUrl(d.avatar_url, "avatar")}"
+            style="width:48px;height:48px;border-radius:5px;object-fit:cover"></div>` : ""}`;
+      document.body.appendChild(el);
+      const rect = ev.target.getBoundingClientRect();
+      el.style.left = Math.min(rect.left, window.innerWidth - el.offsetWidth - 12) + "px";
+      el.style.top = Math.min(rect.bottom + 6, window.innerHeight - el.offsetHeight - 12) + "px";
+    } catch (e) {}
+  }, 260);
+}
+function hideNickInfo() {
+  clearTimeout(_nickTimer);
+  const p = document.getElementById("nickPopup");
+  if (p) p.remove();
+}
+
+// ===================== 加载数据 =====================
+function buildQuery(extra) {
+  const url = new URL("/api/messages", location.origin);
+  if (INIT_ROOM) url.searchParams.set("room_id", INIT_ROOM);
+  for (const k in extra) if (extra[k] !== "" && extra[k] != null) url.searchParams.set(k, extra[k]);
+  return url;
+}
+
+function pad2(n) { return String(n).padStart(2, "0"); }
+function fmtDayInput(d) {
+  return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate());
+}
+function todayStr() { return fmtDayInput(new Date()); }
+
+/** 「重新加载当前视图」：日历选的那天 / 范围（近N天或全部） */
+async function loadMessages() {
+  if (currentDay) return loadDay(currentDay);
+  return loadRange();
+}
+
+/** 范围模式：取最新的 PAGE_LOAD 条，落在底部（最新），滚到顶再补更早的 */
+async function loadRange() {
+  searchMode = false;
+  currentDay = "";
+  document.getElementById("clearBtn").classList.remove("show");
+  const extra = { size: PAGE_LOAD, order: "desc" };
+  if (currentRangeDays) extra.days = currentRangeDays;
+  const d = await (await fetch(buildQuery(extra))).json();
+  allMessages = d.messages || [];
+  hasMoreHistory = !!d.has_more;
+  oldestLoadedId = oldestIdOf(allMessages);
+  seenKeys.clear();
+  allMessages.forEach(m => seenKeys.add(msgKey(m)));
+  stickToBottom = true;
+  renderMessages(allMessages, document.getElementById("allList"), "", true);
+  renderTopHint();
+  updateCounts(d.total);
+  loadTeacherColumn();
+}
+
+/** 日历模式：通读某一天（时间正序），默认落在当天最新处 */
+async function loadDay(date) {
+  currentDay = date;
+  searchMode = false;
+  document.getElementById("datePicker").value = date;
+  document.querySelectorAll("[data-range]").forEach(b => b.classList.remove("active"));
+  document.getElementById("todayBtn").classList.toggle("on", date === todayStr());
+  const d = await (await fetch(buildQuery({ date, size: 8000, order: "asc" }))).json();
+  if (!d.count) {
+    // 这天没数据（例如过了午夜选“今天”、或选了非交易日）——给出明确的下一步
+    const near = d.nearest_date || "";
+    document.getElementById("allList").innerHTML =
+      `<div class="empty">${date} 没有消息<br>
+       <span style="font-size:12px">约牛只开放最近 7 天；也许今天还没开市</span>
+       ${near ? `<br><br><button onclick="loadDay('${near}')">去看最近有数据的 ${near}</button>` : ""}</div>`;
+    allMessages = []; hasMoreHistory = false; oldestLoadedId = 0;
+    renderTopHint(); updateCounts(0);
+    return;
+  }
+  allMessages = d.messages || [];
+  hasMoreHistory = !!d.has_more;
+  oldestLoadedId = oldestIdOf(allMessages);
+  seenKeys.clear();
+  allMessages.forEach(m => seenKeys.add(msgKey(m)));
+  stickToBottom = true;
+  renderMessages(allMessages, document.getElementById("allList"), "", true);
+  renderTopHint();
+  updateCounts(d.total);
+  loadTeacherColumn();
+}
+
+function onDatePick() {
+  const v = document.getElementById("datePicker").value;
+  if (!v) return;
+  if (v > todayStr()) { alert("还没到那天（约牛也只会给最近 7 天）"); return; }
+  loadDay(v);
+}
+
+function shiftDay(delta) {
+  const cur = currentDay || todayStr();
+  const d = new Date(cur + "T12:00:00");
+  d.setDate(d.getDate() + delta);
+  const v = fmtDayInput(d);
+  if (v > todayStr()) { alert("已经是今天了"); return; }
+  loadDay(v);
+}
+
+function loadToday() { loadDay(todayStr()); }
+
+async function loadTeacherColumn() {
+  const extra = { size: 800, order: "desc", type: "teacher" };
+  if (currentDay) extra.date = currentDay;
+  else if (currentRangeDays) extra.days = currentRangeDays;
+  try {
+    const d = await (await fetch(buildQuery(extra))).json();
+    // 注意：API 对 order=desc 也会把结果反转为「时间正序」再返回（方便前端直接 append），
+    // 这里以前又 .reverse() 了一次 → 变成新→旧，导致贴底后底部是早上 08:11 的文章卡片，
+    // 而最新的老师消息被顶到看不见的顶部。
+    teacherMessages = d.messages || [];
+    renderMessages(teacherMessages, document.getElementById("teacherList"), "", true);
+    document.getElementById("teacherCount").textContent = teacherMessages.length +
+      (d.has_more ? "+ 条（仅显示最新部分）" : " 条");
+  } catch (e) {}
+}
+
+function oldestIdOf(msgs) {
+  for (const m of msgs) if (m.id) return m.id;
+  return 0;
+}
+
+/** 向历史（更早）加载一页，接在列表顶部并保持滚动位置。 */
+async function loadOlder() {
+  if (loadingOlder || !hasMoreHistory || !oldestLoadedId) return;
+  loadingOlder = true;
+  const hint = document.getElementById("topHint");
+  if (hint) hint.textContent = "加载更早…";
+  try {
+    const extra = { size: PAGE_OLDER, order: "desc", before_id: oldestLoadedId };
+    if (currentDay) extra.date = currentDay;
+    else if (currentRangeDays) extra.days = currentRangeDays;
+    const d = await (await fetch(buildQuery(extra))).json();
+    const older = d.messages || [];
+    if (!older.length) { hasMoreHistory = false; }
+    else {
+      const list = document.getElementById("allList");
+      const before = list.scrollHeight;
+      const keep = list.scrollTop;
+      // 取消可能还在跑的分批渲染，并保留已渲染节点
+      const st = _renderStates.get(list.id);
+      if (st && st.observer) { st.observer.disconnect(); st.observer = null; }
+      const frag = document.createDocumentFragment();
+      older.forEach(m => renderMsg(m, frag, searchKeyword));
+      list.insertBefore(frag, list.firstChild);
+      allMessages = older.concat(allMessages);
+      older.forEach(m => seenKeys.add(msgKey(m)));
+      oldestLoadedId = oldestIdOf(older) || oldestLoadedId;
+      hasMoreHistory = !!d.has_more;
+      list.scrollTop = keep + (list.scrollHeight - before);
+      loadNickCounts();
+      renderTopHint();
+      updateCounts();
+    }
+  } catch (e) {
+    console.warn("加载更早失败", e);
+  } finally {
+    loadingOlder = false;
+    renderTopHint();
+  }
+}
+
+function renderTopHint() {
+  let hint = document.getElementById("topHint");
+  const list = document.getElementById("allList");
+  if (!hint) {
+    hint = document.createElement("div");
+    hint.id = "topHint";
+    hint.className = "list-top-hint";
+    list.insertBefore(hint, list.firstChild);
+  }
+  if (loadingOlder) { hint.textContent = "加载更早…"; return; }
+  hint.innerHTML = hasMoreHistory
+    ? `已加载 ${allMessages.length} 条 · <button onclick="loadOlder()">↑ 加载更早</button>`
+    : `已到最早（共 ${allMessages.length} 条）`;
+}
+
+function updateCounts(total) {
+  const el = document.getElementById("allCount");
+  const scope = currentDay ? currentDay + "（日历）"
+    : (currentRangeDays ? `近${currentRangeDays}天` : "全部");
+  const t = (total != null) ? total : allMessages.length;
+  // 把实际载入的时间范围也显示出来，一眼就能确认“看的是哪天”
+  let span = "";
+  if (allMessages.length) {
+    const a = (allMessages[0].msg_date || "").slice(5, 16);
+    const b = (allMessages[allMessages.length - 1].msg_date || "").slice(5, 16);
+    span = ` · ${a} → ${b}`;
+  }
+  el.textContent = `${scope} · 已加载 ${allMessages.length} / ${t} 条${span}`;
+}
+
+async function doSearch() {
+  const kw = document.getElementById("searchInput").value.trim();
+  const uid = document.getElementById("userIdInput").value.trim();
+  if (!kw && !uid) { clearSearch(); return; }
+  const url = new URL("/api/messages/search", location.origin);
+  if (kw) url.searchParams.set("keyword", kw);
+  if (uid) url.searchParams.set("user_id", uid);
+  const s = parseRange(document.getElementById("searchStart").value);
+  const e = parseRange(document.getElementById("searchEnd").value);
+  if (s) url.searchParams.set("start_date", s);
+  if (e) url.searchParams.set("end_date", e);
+  const r = await fetch(url);
+  const d = await r.json();
+  if (d.error) { alert(d.error); return; }
+  searchMode = true;
+  searchKeyword = kw;
+  renderMessages(d.messages || [], document.getElementById("allList"), kw);
+  document.getElementById("allCount").textContent = "搜索命中 " + (d.total || 0) + " 条";
+  document.getElementById("clearBtn").classList.add("show");
+}
+
+function clearSearch() {
+  searchMode = false;
+  searchKeyword = "";
+  document.getElementById("clearBtn").classList.remove("show");
+  document.getElementById("searchInput").value = "";
+  document.getElementById("userIdInput").value = "";
+  renderMessages(allMessages, document.getElementById("allList"), "", stickToBottom);
+  renderTopHint();
+  updateCounts();
+}
+
+function filterByUser(uid, nick) {
+  if (!uid) return;
+  document.getElementById("userIdInput").value = uid;
+  document.getElementById("searchInput").value = "";
+  doSearch();
+}
+
+async function setRange(days) {
+  currentRangeDays = days;
+  currentDay = "";
+  document.getElementById("datePicker").value = "";
+  document.getElementById("todayBtn").classList.remove("on");
+  document.querySelectorAll("[data-range]").forEach(b =>
+    b.classList.toggle("active", String(days) === b.dataset.range));
+  await loadRange();
+}
+
+// ===================== 定位 / 滚动 =====================
+function listScrollTop() { return document.getElementById("allList").scrollTop; }
+function scrollToBottom(instant) {
+  // 用户主动点「回到底部」/新消息提示时才同时贴两栏
+  const al = document.getElementById("allList");
+  const tl = document.getElementById("teacherList");
+  al.scrollTop = al.scrollHeight;
+  tl.scrollTop = tl.scrollHeight;
+  _follow.allList = true;
+  _follow.teacherList = true;
+  pendingNew = 0;
+  stickToBottom = true;
+  document.getElementById("newMsgHint").style.display = "none";
+}
+function jumpTo(hhmm) {
+  const list = document.getElementById("allList");
+  const nodes = Array.from(list.querySelectorAll(".msg"));
+  if (!nodes.length) return;
+  // 以列表中最新的那天为定位基准（默认看当天节奏）
+  const ts = allMessages.map(x => x.ts || 0);
+  const maxTs = Math.max(...ts, 0);
+  const baseDate = new Date(maxTs * 1000).toISOString().slice(0, 10);
+  let fallback = null;
+  for (const el of nodes) {
+    const m = allMessages.find(x => msgKey(x) === el.dataset.mid);
+    if (!m || !m.msg_date) continue;
+    const t = m.msg_date.slice(11, 16);
+    if (m.msg_date.slice(0, 10) === baseDate && t >= hhmm) {
+      el.scrollIntoView({ block: "start" });
+      el.classList.add("is-new");
+      setTimeout(() => el.classList.remove("is-new"), 1800);
+      return;
+    }
+    if (!fallback && t >= hhmm) fallback = el;
+  }
+  if (fallback) { fallback.scrollIntoView({ block: "start" }); return; }
+  list.scrollTop = 0;
+}
+function jumpToMessage(mid) {
+  if (!mid) return;
+  const list = document.getElementById("allList");
+  const el = list.querySelector(`.msg[data-mid="id:${mid}"]`) ||
+             list.querySelector(`.msg[data-mid="${mid}"]`);
+  if (!el) { alert("原消息不在当前列表中"); return; }
+  el.scrollIntoView({ block: "center" });
+  el.classList.add("is-new");
+  setTimeout(() => el.classList.remove("is-new"), 1800);
+}
+function onImgLoad(el) {
+  // 只滚动「图片所在的那一栏」，而且只在该栏处于跟随底部时才滚。
+  // 以前一律调 scrollToBottom()（同时滚左右两栏）→ 你在左栏往上翻时，
+  // 头像/图片陆续加载完就把两栏又拽到底，看着就是“停一会儿自动贴底 + 滚动条抽搯”。
+  const list = el && el.closest ? el.closest(".msg-list") : null;
+  if (!list || !_follow[list.id] || _pinning[list.id]) return;
+  list.scrollTop = list.scrollHeight;
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  for (const id of ["allList", "teacherList"]) {
+    const list = document.getElementById(id);
+    if (!list) continue;
+    list.addEventListener("scroll", () => {
+      if (_pinning[id]) return;      // 正在「落地到底部」，忽略清空/追加引发的伪滚动事件
+      const near = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+      _follow[id] = near;
+      if (id !== "allList") return;
+      stickToBottom = near;
+      if (near) {
+        pendingNew = 0;
+        document.getElementById("newMsgHint").style.display = "none";
+      }
+      // 滚到顶部→自动加载更早（正在分批渲染或搜索时不管，避免抖动）
+      if (list.scrollTop < 120 && !searchMode && !loadingOlder && !_renderStates.has(id)) {
+        loadOlder();
+      }
+    }, { passive: true });
+  }
+});
+
+// ===================== 发送 =====================
+let pendingImage = null;
+
+function onSendKeydown(ev) {
+  if (ev.key === "Enter" && !ev.shiftKey) {
+    ev.preventDefault();
+    sendMsg();
+  }
+}
+async function sendMsg() {
+  const box = document.getElementById("sendInput");
+  const btn = document.getElementById("sendBtn");
+  const text = box.value.trim();
+  if (!text && !pendingImage) return;
+  btn.disabled = true;
+  try {
+    let body;
+    if (text) body = { text };
+    if (pendingImage && !text) body = { image: pendingImage };
+    else if (pendingImage && text) {
+      // 图文一起发：先发文字，再发图片（约牛 REST 一次只发一种）
+      await fetch("/api/send", { method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }) });
+      body = { image: pendingImage };
+      box.value = "";
+    }
+    const r = await fetch("/api/send", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    box.value = "";
+    autoGrow(box);
+    if (pendingImage) { clearImage(); }
+    stickToBottom = true;
+    setTimeout(() => scrollToBottom(true), 400);
+  } catch (e) {
+    alert("发送失败：" + e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function uploadFile(input) {
+  const f = input.files && input.files[0];
+  input.value = "";
+  if (f) await doUpload(f);
+}
+async function doUpload(file) {
+  if (file.size > 2 * 1024 * 1024) { alert("图片超过 2MB，约牛 OSS 限制"); return; }
+  const btn = document.getElementById("uploadBtn");
+  btn.classList.add("uploading");
+  try {
+    const ext = (file.name.split(".").pop() || "png").toLowerCase();
+    const r = await fetch(`/api/upload?ext=${ext}`, { method: "POST", body: file });
+    const d = await r.json();
+    if (d.error) { alert(d.error); return; }
+    pendingImage = { imgUrl: d.imgUrl, width: d.width, height: d.height };
+    showImagePreview(file);
+  } catch (e) {
+    alert("上传失败：" + e);
+  } finally {
+    btn.classList.remove("uploading");
+  }
+}
+function showImagePreview(file) {
+  const wrap = document.getElementById("imagePreview");
+  const url = URL.createObjectURL(file);
+  wrap.innerHTML = `<div class="thumb">
+      <img src="${url}" onclick="openLightbox('${url}')">
+      <span class="rm" onclick="clearImage()">✕</span>
+    </div>`;
+  wrap.classList.add("show");
+}
+function clearImage() {
+  const img = document.querySelector("#imagePreview img");
+  if (img && img.src.startsWith("blob:")) URL.revokeObjectURL(img.src);
+  pendingImage = null;
+  const wrap = document.getElementById("imagePreview");
+  wrap.innerHTML = "";
+  wrap.classList.remove("show");
+}
+document.addEventListener("paste", ev => {
+  const items = (ev.clipboardData || {}).items || [];
+  for (const it of items) {
+    if (it.type && it.type.startsWith("image/")) {
+      const f = it.getAsFile();
+      if (f) { doUpload(f); ev.preventDefault(); }
+      return;
+    }
+  }
+});
+
+// ===================== 图片放大 =====================
+(function initLightbox() {
+  const lb = document.getElementById("lightbox");
+  const img = document.getElementById("lightboxImg");
+  lb._zoom = 1; lb._dx = 0; lb._dy = 0;
+  function apply() {
+    img.style.transform = `scale(${lb._zoom}) translate(${lb._dx}px, ${lb._dy}px)`;
+    if (lb._zoom > 1) {
+      img.style.maxWidth = "none"; img.style.maxHeight = "none";
+      img.style.transformOrigin = "top center";
+    } else {
+      img.style.maxWidth = "92vw"; img.style.maxHeight = "92vh";
+      img.style.transformOrigin = "center center";
+    }
+  }
+  lb.addEventListener("click", e => { if (e.target === lb) lb.style.display = "none"; });
+  img.addEventListener("dblclick", e => { e.stopPropagation(); lb._zoom = 1; lb._dx = 0; lb._dy = 0; apply(); });
+  lb.addEventListener("wheel", e => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) lb._zoom = Math.max(.2, Math.min(12, lb._zoom * (e.deltaY < 0 ? 1.2 : .83)));
+    else lb._dy -= e.deltaY / 5;
+    apply();
+  }, { passive: false });
+  let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  img.addEventListener("mousedown", e => {
+    drag = true; sx = e.clientX; sy = e.clientY; ox = lb._dx; oy = lb._dy;
+    img.classList.add("dragging"); e.preventDefault();
+  });
+  document.addEventListener("mousemove", e => {
+    if (!drag) return;
+    lb._dx = ox + (e.clientX - sx); lb._dy = oy + (e.clientY - sy); apply();
+  });
+  document.addEventListener("mouseup", () => { drag = false; img.classList.remove("dragging"); });
+})();
+function openLightbox(src) {
+  const lb = document.getElementById("lightbox");
+  lb._zoom = 1; lb._dx = 0; lb._dy = 0;
+  document.getElementById("lightboxImg").src = src;
+  lb.style.display = "flex";
+}
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") {
+    document.getElementById("lightbox").style.display = "none";
+    hideNickInfo();
+  }
+});
+
+// ===================== WebSocket 实时 =====================
+function connectWS() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => { wsRetry = 0; };
+  ws.onmessage = ev => {
+    let d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (d.type === "message") { onRealtimeMessage(d.data); }
+    else if (d.type === "status") { updateImStatus(d); }
+    else if (d.type === "synced") {
+      if (d.error) console.warn("同步失败：" + d.error);
+      else onSyncProgress({ running: false, done: true,
+                            detail: `完成：${d.pages || 0} 次请求 ${d.fetched || 0} 条，新增 ${d.added || 0} 条` });
+    }
+    else if (d.type === "sync_progress") { onSyncProgress(d); }
+    else if (d.type === "event") {
+      const hint = document.getElementById("newMsgHint");
+      // 群提示（进出场）：仅记录，不打断阅读
+      console.log("[群事件]", d.data);
+    }
+  };
+  ws.onclose = () => {
+    wsRetry++;
+    setTimeout(connectWS, Math.min(1000 * Math.pow(1.6, wsRetry), 15000));
+  };
+}
+setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 45000);
+
+function onRealtimeMessage(m) {
+  const key = msgKey(m);
+  if (!key || seenKeys.has(key)) return;
+  if (m.id && allMessages.some(x => x.id === m.id)) return;
+  seenKeys.add(key);
+  allMessages.push(m);
+  allMessages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  const isTeacherSide = m.user_type === 4;
+  if (isTeacherSide) teacherMessages.push(m);
+
+  // 搜索结果模式下不往结果列表里混入实时消息，只提示
+  if (searchMode) {
+    pendingNew++;
+    document.getElementById("newMsgCount").textContent = pendingNew;
+    document.getElementById("newMsgHint").style.display = "block";
+    return;
+  }
+
+  const list = document.getElementById("allList");
+  if (_renderStates.has(list.id)) {          // 分批渲染未结束时直接改数据源
+    _renderStates.get(list.id).msgs = allMessages;
+  }
+  const frag = document.createDocumentFragment();
+  renderMsg(m, frag, searchKeyword);
+  const node = frag.firstElementChild;
+  node.classList.add("is-new");
+  setTimeout(() => node.classList.remove("is-new"), 1800);
+  list.appendChild(node);
+  if (isTeacherSide) {
+    const tl = document.getElementById("teacherList");
+    if (_renderStates.has(tl.id)) _renderStates.get(tl.id).msgs = teacherMessages;
+    const f2 = document.createDocumentFragment();
+    renderMsg(m, f2, "");
+    tl.appendChild(f2.firstElementChild);
+    document.getElementById("teacherCount").textContent = teacherMessages.length + " 条";
+  }
+  document.getElementById("allCount").textContent = "全部 " + allMessages.length + " 条";
+  loadNickCounts();
+  if (stickToBottom) scrollToBottom(true);
+  else {
+    pendingNew++;
+    const hint = document.getElementById("newMsgHint");
+    document.getElementById("newMsgCount").textContent = pendingNew;
+    hint.style.display = "block";
+  }
+}
+
+function updateImStatus(d) {
+  const dot = document.getElementById("imDot");
+  const txt = document.getElementById("imText");
+  const map = {
+    online: ["on", "实时已连接"],
+    connecting: ["warn", "连接中…"],
+    login_failed: ["err", "IM 登录失败"],
+    error: ["err", "IM 异常"],
+    closed: ["warn", "IM 断开重连中"],
+    off: ["", "实时未启用"],
+  };
+  const [cls, label] = map[d.im_state] || ["", "未知"];
+  dot.className = "dot " + cls;
+  txt.textContent = label + (d.im_detail ? " · " + d.im_detail.slice(0, 40) : "");
+}
+
+// ===================== 设置 / 探测 =====================
+async function loadStatus() {
+  const r = await fetch("/api/status");
+  const d = await r.json();
+  if (d.room_id) {
+    document.getElementById("roomName").textContent = "#" + d.room_id;
+  }
+  myUserId = String(d.my_user_id || "");
+  updateImStatus({ im_state: d.im.state, im_detail: d.im.detail });
+  // 同步进度（刷新页面时如果后台还在跑，也能接上）
+  if (d.sync && d.sync.running) onSyncProgress(d.sync);
+  else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
+  const modalOpen = document.getElementById("settingsModal").style.display === "flex";
+  if (!modalOpen) {
+    document.getElementById("setToken").value = "";
+    document.getElementById("setTeacher").value = d.teacher_id || "";
+  }
+  const banner = document.getElementById("warnBanner");
+  const warns = [];
+  if (!d.has_token) warns.push('未配置 centraltoken（只能浏览本地已同步消息）');
+  if (!d.im.state || d.im.state === "off") warns.push("实时消息未启用");
+  if (d.im.state === "login_failed") warns.push("IM 凭证失效（userSig 过期）");
+  if (warns.length) {
+    banner.innerHTML = "⚠️ " + warns.join(" · ") +
+      ' · <a onclick="openSettings()">去设置</a>';
+    banner.classList.add("show");
+    document.getElementById("main").classList.add("with-banner");
+  } else {
+    banner.classList.remove("show");
+    document.getElementById("main").classList.remove("with-banner");
+  }
+  return d;
+}
+function openSettings() {
+  document.getElementById("setMsg").textContent = "";
+  document.getElementById("settingsModal").style.display = "flex";
+  loadStatus();
+}
+function closeSettings() { document.getElementById("settingsModal").style.display = "none"; }
+
+async function saveImOnly() {
+  const body = {
+    im_sdk_app_id: document.getElementById("setSdk").value.trim(),
+    im_identifier: document.getElementById("setIdent").value.trim(),
+    im_user_sig: document.getElementById("setSig").value.trim(),
+    im_group_id: document.getElementById("setGroup").value.trim(),
+    im_enabled: "1",
+  };
+  if (!body.im_user_sig) return false;
+  await fetch("/api/settings", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body) });
+  return true;
+}
+
+async function saveAndProbe() {
+  const msg = document.getElementById("setMsg");
+  const btn = document.getElementById("probeBtn");
+  const token = document.getElementById("setToken").value.trim();
+  const teacher = document.getElementById("setTeacher").value.trim() || "328";
+  const sig = document.getElementById("setSig").value.trim();
+  msg.className = "msg";
+  msg.textContent = "处理中…";
+  btn.disabled = true;
+  try {
+    if (sig) await saveImOnly();
+    if (token) {
+      const r = await fetch("/api/probe", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ centraltoken: token, teacher_id: parseInt(teacher, 10) })
+      });
+      const d = await r.json();
+      if (d.error) { msg.textContent = "❌ " + d.error; return; }
+      msg.className = "msg ok";
+      msg.textContent = `✅ 房间 #${d.room.id} ${d.room.name}｜老师 ${d.room.teacher || ""}｜`
+        + (d.im_ready ? "IM 凭证已更新" : "IM 凭证获取失败：" + (d.im_error || ""));
+      await loadStatus();
+      // 探测成功后先拉最新几页，让首屏马上有内容（全量同步由用户手动触发）
+      setTimeout(() => syncMore(), 500);
+    } else {
+      msg.className = "msg ok";
+      msg.textContent = "✅ IM 凭证已保存（未填 centraltoken，跳过房间探测）";
+      await loadStatus();
+    }
+  } catch (e) {
+    msg.textContent = "❌ " + e;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function probeIm() {
+  const msg = document.getElementById("setMsg");
+  msg.className = "msg";
+  msg.textContent = "正在连接腾讯云 IM 测试登录…";
+  await saveImOnly();
+  try {
+    const r = await fetch("/api/probe-im", { method: "POST",
+      headers: { "content-type": "application/json" }, body: "{}" });
+    const d = await r.json();
+    if (d.ok) {
+      msg.className = "msg ok";
+      msg.textContent = `✅ IM 登录成功（TinyId ${d.tinyId}）`;
+    } else {
+      msg.textContent = `❌ IM 登录失败：${d.errorInfo || d.error || "未知"}`;
+    }
+  } catch (e) {
+    msg.textContent = "❌ " + e;
+  }
+}
+
+async function _postSync(body, hint) {
+  const r = await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify(body) });
+  const d = await r.json();
+  if (d.error) { alert(d.error); if (r.status === 401) openSettings(); return false; }
+  showSyncBar(hint);
+  return true;
+}
+
+/** 日常增量：只拉最新几页 */
+async function syncMore() {
+  await _postSync({ pages: 5, page_size: 1000 }, "同步最新中…");
+}
+
+/** 全量：一直翻到最早（拿到多少存多少，页面会实时显示进度） */
+async function syncFull() {
+  if (!confirm("全量同步会从最新一直翻到最早（今天一天就 3000+ 条，多天可能上万条）。\n"
+             + "大约 1 分钟，期间可以继续浏览。开始吗？")) return;
+  await _postSync({ full: true, page_size: 1000, max_messages: 200000 }, "全量同步中…");
+}
+
+function showSyncBar(text) {
+  document.getElementById("syncText").textContent = text || "同步中…";
+  document.getElementById("syncBar").classList.add("show");
+}
+function hideSyncBar() {
+  document.getElementById("syncBar").classList.remove("show");
+}
+
+/** 同步进度（由 WebSocket 的 sync_progress 驱动） */
+function onSyncProgress(p) {
+  if (!p.running && p.done) {
+    document.getElementById("syncText").textContent = p.detail || "同步完成";
+    document.getElementById("syncFill").style.width = "100%";
+    setTimeout(hideSyncBar, 4000);
+    loadMessages();
+    return;
+  }
+  showSyncBar();
+  const pages = p.pages || 0, fetched = p.fetched || 0;
+  document.getElementById("syncText").textContent =
+    `${p.detail || "同步中"}  ·  ${pages} 次请求 / ${fetched} 条`;
+  // 无确定终点：按已取条数给个视觉进度（50 页 / 50000 条为满）
+  document.getElementById("syncFill").style.width =
+    Math.min(99, Math.max(2, (pages / 50) * 100)) + "%";
+}
+
+async function backupDB() {
+  const r = await fetch("/api/backup", { method: "POST" });
+  const d = await r.json();
+  alert(d.error ? "备份失败：" + d.error
+    : `已备份 → data/backups/${d.file}（${(d.size / 1024 / 1024).toFixed(2)} MB）`);
+}
+
+async function showStats() {
+  const r = await fetch("/api/stats");
+  const d = await r.json();
+  document.getElementById("statsKv").innerHTML = `
+    <div><b>总消息</b>${d.total} 条</div>
+    <div><b>老师消息</b>${d.teacher} 条</div>
+    <div><b>图片</b>${d.images} 条</div>
+    <div><b>发言用户</b>${d.users} 人</div>
+    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>`;
+  document.getElementById("statsTable").innerHTML = (d.days || [])
+    .map(x => `<tr><td>${x.date || "-"}</td><td>${x.teacher}</td><td>${x.count}</td></tr>`).join("");
+  document.getElementById("statsModal").style.display = "flex";
+}
+function closeStats() { document.getElementById("statsModal").style.display = "none"; }
+
+// ===================== 启动 =====================
+connectWS();
+loadToday().then(loadStatus);   // 默认落在「今天」的日历视图，且停在当天最新处
+setInterval(async () => { const d = await loadStatus(); }, 30000);
+</script>
+</body>
+</html>

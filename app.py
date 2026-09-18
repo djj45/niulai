@@ -1,0 +1,1024 @@
+# -*- coding: utf-8 -*-
+"""
+约牛聊天室 Web 服务
+==================
+Quart 后端 + 原生 WebSocket + 腾讯云 IM 常驻监听。
+
+功能：
+  - 历史消息（游标分页增量同步，落 SQLite）
+  - 实时消息（腾讯云 IM WebSocket → 存库 → WS 广播到浏览器）
+  - 发文本 / 图片（REST + 阿里云 OSS 直传）
+  - 图片、头像本地缓存代理
+  - centraltoken / IM 凭证管理
+
+启动：uv run python run.py     浏览器：https://127.0.0.1:5002
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import os
+import threading
+import time
+from datetime import datetime, timedelta
+
+from quart import Quart, abort, jsonify, render_template, request, send_file, websocket
+
+import db
+import niulai_api as api
+from niulai_api import AuthExpired, NiuLaiError, TouguClient
+from niulai_im import TencentImClient
+
+# .env 可选覆盖（首次启动时把环境变量写进数据库设置）
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except Exception:
+    pass
+
+# ===================== 基础路径 =====================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+CACHE_DIR = os.path.join(DATA_DIR, "cache")
+IMAGE_DIR = os.path.join(CACHE_DIR, "images")
+AVATAR_DIR = os.path.join(CACHE_DIR, "avatars")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+for d in (DATA_DIR, CACHE_DIR, IMAGE_DIR, AVATAR_DIR, BACKUP_DIR):
+    os.makedirs(d, exist_ok=True)
+
+DB_PATH = db.DB_PATH
+
+# 允许代理下载的 CDN 域名（防 SSRF）
+MEDIA_HOSTS = ("fileoss.zx093.com", "zx093.cn", "zx093.com", "aliyuncs.com",
+               "qcloud.com", "my-imcloud.com")
+
+app = Quart(__name__, template_folder="templates")
+
+conn = db.connect(DB_PATH)
+_db_lock = threading.RLock()
+
+# ===================== WebSocket 广播 =====================
+_ws_clients: set = set()
+_ws_lock = threading.Lock()
+_broadcast_queue: asyncio.Queue = asyncio.Queue()
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def broadcast(payload: dict):
+    """线程安全地投递广播（IM 线程/MQTT 风格回调里调用）。"""
+    try:
+        msg = json.dumps(payload, ensure_ascii=False)
+        if _loop and _loop.is_running():
+            _loop.call_soon_threadsafe(_broadcast_queue.put_nowait, msg)
+        else:
+            _broadcast_queue.put_nowait(msg)
+    except Exception:
+        pass
+
+
+async def _broadcast_loop():
+    while True:
+        payload = await _broadcast_queue.get()
+        with _ws_lock:
+            clients = list(_ws_clients)
+        dead = []
+        for ws in clients:
+            try:
+                await ws.send(payload)
+            except Exception:
+                dead.append(ws)
+        if dead:
+            with _ws_lock:
+                for ws in dead:
+                    _ws_clients.discard(ws)
+
+
+# ===================== 配置 =====================
+CFG_KEYS = ("centraltoken", "teacher_id", "room_id", "im_sdk_app_id", "im_identifier",
+            "im_user_sig", "im_group_id", "im_enabled", "my_user_id", "my_nick_name",
+            "my_avatar", "token_saved_at")
+
+
+def cfg() -> dict:
+    with _db_lock:
+        return db.get_settings(conn, CFG_KEYS)
+
+
+ENV_SEED = {
+    "centraltoken": "NIULAI_CENTRALTOKEN",
+    "teacher_id": "NIULAI_TEACHER_ID",
+    "room_id": "NIULAI_ROOM_ID",
+    "im_sdk_app_id": "NIULAI_IM_SDK_APP_ID",
+    "im_identifier": "NIULAI_IM_IDENTIFIER",
+    "im_user_sig": "NIULAI_IM_USER_SIG",
+    "im_group_id": "NIULAI_IM_GROUP_ID",
+}
+
+
+def seed_from_env():
+    """首次启动时用 .env 里的值填补空设置（已存在的不覆盖）。"""
+    with _db_lock:
+        for key, env in ENV_SEED.items():
+            val = os.environ.get(env, "").strip()
+            if val and not db.get_setting(conn, key):
+                db.set_setting(conn, key, val)
+        if db.get_setting(conn, "im_user_sig") and not db.get_setting(conn, "im_enabled"):
+            db.set_setting(conn, "im_enabled", "1")
+
+
+def _client() -> TouguClient:
+    c = cfg()
+    return TouguClient(c.get("centraltoken", ""), on_token_expired=lambda: broadcast(
+        {"type": "status", "auth_expired": True}))
+
+
+# ===================== 媒体缓存代理 =====================
+def _cache_name(url: str, kind: str) -> str:
+    base = url.split("?")[0].rstrip("/").split("/")[-1]
+    base = "".join(ch for ch in base if ch.isalnum() or ch in "._-")[:60] or "file"
+    return f"{hashlib.md5(url.encode()).hexdigest()[:16]}_{base}"
+
+
+def _media_dir(kind: str) -> str:
+    return IMAGE_DIR if kind == "image" else AVATAR_DIR
+
+
+def cache_media(url: str, kind: str = "image") -> str:
+    """下载并缓存远端媒体，返回本地文件名（失败返回空串）。"""
+    if not url:
+        return ""
+    if url.startswith("/"):
+        url = api.media_url(url)
+    if not url.startswith("http"):
+        return ""
+    host = url.split("/")[2] if "//" in url else ""
+    if not any(host == h or host.endswith("." + h) for h in MEDIA_HOSTS):
+        return ""
+    key = f"{kind}:{url}"
+    with _db_lock:
+        local = db.media_local(conn, key)
+    path = os.path.join(_media_dir(kind), local) if local else ""
+    if local and os.path.exists(path):
+        return local
+    name = _cache_name(url, kind)
+    path = os.path.join(_media_dir(kind), name)
+    if not os.path.exists(path):
+        try:
+            data = api.download_media(url)
+            if not data:
+                return ""
+            with open(path, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            print(f"[媒体] 下载失败 {url}: {e}")
+            return ""
+    with _db_lock:
+        db.save_media(conn, key, url, name, kind, os.path.getsize(path))
+    return name
+
+
+_prefetch_queue: "list[tuple[str, str]]" = []
+_prefetch_lock = threading.Lock()
+_prefetch_seen: set = set()
+
+
+def prefetch(url: str, kind: str = "image"):
+    """把远端媒体排进后台下载队列（去重）。"""
+    if not url:
+        return
+    if url.startswith("/"):
+        url = api.media_url(url)
+    if not url.startswith("http"):
+        return
+    with _prefetch_lock:
+        if url in _prefetch_seen:
+            return
+        _prefetch_seen.add(url)
+        _prefetch_queue.append((url, kind))
+
+
+def _prefetch_worker():
+    while True:
+        with _prefetch_lock:
+            item = _prefetch_queue.pop(0) if _prefetch_queue else None
+        if not item:
+            time.sleep(0.5)
+            continue
+        try:
+            cache_media(item[0], item[1])
+        except Exception:
+            pass
+
+
+# ===================== 消息入库 =====================
+# 写入分批：每批只占一小会儿锁，中间让出 GIL，
+# 否则全量同步时网页请求会被锁住（实测要 20-30 秒才响应，TLS 握手都超时）
+INGEST_CHUNK = 250
+PREFETCH_LIMIT = 400        # 待下载队列上限，避免全量同步时积压上万张图
+
+
+def ingest(room_id: int, msgs: list, origin: str = "rest") -> int:
+    """入库 + 触发媒体预取 + 广播。返回新增条数。"""
+    if not msgs:
+        return 0
+    new_count = 0
+    new_im: list = []
+    for i in range(0, len(msgs), INGEST_CHUNK):
+        chunk = msgs[i:i + INGEST_CHUNK]
+        with _db_lock:
+            if origin == "im":
+                # 实时消息只有 1~2 条，逐条判重（要拿到「哪些是新的」才能广播）
+                for m in chunk:
+                    if db.message_exists(conn, room_id, m):
+                        continue
+                    db.upsert_messages(conn, room_id, [m], origin)
+                    new_im.append(m)
+            else:
+                new_count += db.upsert_messages(conn, room_id, chunk, origin)
+            conn.commit()
+        if origin == "im":
+            new_count = len(new_im)
+        time.sleep(0.005)                     # 让出 GIL / 事件循环
+    _schedule_prefetch(msgs)
+    for m in new_im:
+        broadcast({"type": "message", "data": _msg_payload_from_dict(room_id, m)})
+    return new_count
+
+
+def _schedule_prefetch(msgs: list):
+    """媒体预取（限量，避免全量同步时把 CDN 打爆）。"""
+    with _prefetch_lock:
+        budget = PREFETCH_LIMIT - len(_prefetch_queue)
+    if budget <= 0:
+        return
+    for m in msgs:
+        if budget <= 0:
+            return
+        av = m.get("avatar_url") or m.get("avatarUrl")
+        if av:
+            prefetch(av, "avatar")
+        if int(m.get("msg_type") or m.get("msgType") or 0) == 1:
+            content = m.get("msg_content") or m.get("msgContent") or ""
+            try:
+                prefetch(json.loads(content).get("imgUrl", ""), "image")
+            except Exception:
+                pass
+        budget -= 1
+
+
+def _msg_payload_from_dict(room_id: int, m: dict) -> dict:
+    """把归一化 dict 转成前端结构（与 db._msg_to_dict 输出一致）。"""
+    d = {
+        "id": int(m.get("id") or 0),
+        "room_id": room_id,
+        "msg_type": int(m.get("msg_type") or m.get("msgType") or 0),
+        "msg_content": m.get("msg_content") if m.get("msg_content") is not None else m.get("msgContent"),
+        "msg_date": m.get("msg_date") or m.get("msgDate") or "",
+        "user_id": int(m.get("user_id") or m.get("userId") or 0),
+        "nick_name": m.get("nick_name") or m.get("nickName") or "",
+        "yn_no": m.get("yn_no") or m.get("ynNo") or "",
+        "user_type": int(m.get("user_type") or m.get("userType") or 1),
+        "avatar_url": m.get("avatar_url") or m.get("avatarUrl") or "",
+        "real_name": m.get("real_name") or m.get("realName"),
+        "certificate_num": m.get("certificate_num") or m.get("certificateNum"),
+        "private_message_flag": 1 if (m.get("private_message_flag") or m.get("privateMessageFlag")) else 0,
+        "teacher_id": int(m.get("teacher_id") or m.get("teacherId") or 0),
+        "to_user_id": int(m.get("to_user_id") or m.get("toUserId") or 0),
+        "vip_user": 1 if (m.get("vip_user") or m.get("vipUser")) else 0,
+        "audit_status": int(m.get("audit_status") or m.get("auditStatus") or 1),
+        "im_msg_seq": int(m.get("im_msg_seq") or m.get("imMsgSeq") or 0),
+        "images": [],
+        "quote": None,
+        "image": None,
+    }
+    if d["msg_type"] == 1:
+        try:
+            obj = json.loads(d["msg_content"] or "{}")
+            d["image"] = {"url": obj.get("imgUrl", ""), "width": obj.get("width", 0),
+                          "height": obj.get("height", 0)}
+        except Exception:
+            d["image"] = None
+    q = m.get("quote_json")
+    if q and isinstance(q, str):
+        try:
+            d["quote"] = json.loads(q)
+        except Exception:
+            pass
+    d["ts"] = m.get("ts") or api.parse_msg_time(d["msg_date"])
+    return d
+
+
+# ===================== 腾讯云 IM 常驻监听 =====================
+_im_state = {"state": "off", "detail": "", "identifier": "", "group": "",
+             "last_msg_time": "", "messages": 0}
+_im_reload = threading.Event()
+_im_status_lock = threading.Lock()
+
+
+def im_config() -> dict | None:
+    c = cfg()
+    if c.get("im_enabled") not in ("1", "true", "True", ""):
+        return None
+    sdk = c.get("im_sdk_app_id") or ""
+    ident = c.get("im_identifier") or ""
+    sig = c.get("im_user_sig") or ""
+    group = c.get("im_group_id") or ""
+    if not (sdk and ident and sig):
+        return None
+    return {"sdk_app_id": int(sdk), "identifier": ident, "user_sig": sig,
+            "group_ids": [group] if group else [], "room_id": int(c.get("room_id") or 0)}
+
+
+def _im_on_message(m: dict):
+    c = cfg()
+    room_id = int(c.get("room_id") or 0)
+    with _im_status_lock:
+        _im_state["last_msg_time"] = m.get("msg_date", "")
+        _im_state["messages"] += 1
+    ingest(room_id, [m], origin="im")
+
+
+def _im_on_event(e: dict):
+    broadcast({"type": "event", "data": e})
+
+
+def _im_on_status(state: str, detail: str):
+    with _im_status_lock:
+        _im_state["state"] = state
+        _im_state["detail"] = detail
+    broadcast({"type": "status", "im_state": state, "im_detail": detail})
+
+
+async def _im_session(c: dict):
+    client = TencentImClient(c["sdk_app_id"], c["identifier"], c["user_sig"], c["group_ids"],
+                             on_message=_im_on_message, on_event=_im_on_event,
+                             on_status=_im_on_status,
+                             logger=lambda *a: print(time.strftime("[%H:%M:%S]"), *a))
+    with _im_status_lock:
+        _im_state["identifier"] = c["identifier"]
+        _im_state["group"] = (c["group_ids"] or [""])[0]
+    task = asyncio.create_task(client.run_forever())
+    try:
+        while not task.done():
+            if _im_reload.is_set():
+                break
+            await asyncio.sleep(0.5)
+    finally:
+        await client.stop()
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+def _im_supervisor():
+    while True:
+        c = im_config()
+        if not c:
+            with _im_status_lock:
+                _im_state.update(state="off", detail="未配置 IM 凭证（userSig）")
+            _im_reload.wait(5)
+            _im_reload.clear()
+            continue
+        _im_reload.clear()
+        try:
+            asyncio.run(_im_session(c))
+        except Exception as e:
+            print(f"[IM] supervisor 异常：{e}")
+        if not _im_reload.is_set():
+            time.sleep(5)
+
+
+def restart_im():
+    _im_reload.set()
+
+
+def reset_sync_backoff():
+    """拿到新 centraltoken 后清掉失效标记，否则同步会被退避挡着（最长 10 分钟）。"""
+    _sync_state["auth_failed"] = False
+    _sync_state["next_try"] = 0.0
+    _sync_state["detail"] = ""
+
+
+# ===================== 历史同步 =====================
+_sync_state = {"running": False, "detail": "", "added": 0, "auth_failed": False,
+              "next_try": 0.0, "mode": "", "pages": 0, "fetched": 0,
+              "oldest": "", "newest": "", "last_page_ms": 0, "done": False}
+
+# pageSize 实测无上限：1000 条 0.95s、500 条 0.78s。
+# 取不到时逐级降级，避免某个尺寸被服务端拒绝就卡死。
+PAGE_SIZE_LADDER = (1000, 500, 200, 50, 15)
+SYNC_SLEEP = 0.3          # 页间隔，别把人家打挂
+
+
+def _sync_progress(extra: dict | None = None):
+    snap = {k: _sync_state[k] for k in ("running", "mode", "pages", "fetched", "added",
+                                        "oldest", "newest", "done", "detail")}
+    if extra:
+        snap.update(extra)
+    broadcast({"type": "sync_progress", **snap})
+
+
+def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known: bool = True,
+                 full: bool = False, page_size: int = 1000, max_messages: int = 200000,
+                 since_date: str = "", until_id: int = 0):
+    """从最新往历史翻页拉消息。
+
+    full=True  → 一直翻到服务端返回空数组（不限页数，遇到已有消息也继续翻，用于补齐空档）
+    full=False → 最多 pages 页，且在第 2 页起遇到库里已有 id 就停（日常增量）
+    since_date → 只同步比该日期（YYYY-MM-DD）新的消息，到了就停
+    """
+    c = cfg()
+    room_id = int(c.get("room_id") or 0)
+    if not room_id:
+        return {"error": "尚未确定房间，请先设置 centraltoken 或房间号"}
+    client = _client()
+
+    _sync_state.update(running=True, mode="full" if full else "incremental", pages=0,
+                       fetched=0, added=0, oldest="", newest="", done=False,
+                       detail="全量同步中…" if full else "同步最新中…")
+    _sync_progress()
+
+    added_total = fetched = 0
+    cursor = ""
+    sizes = [page_size] + [s for s in PAGE_SIZE_LADDER if s < page_size]
+    i = 0
+    error = ""
+    while True:
+        if not full and i >= max(1, pages):
+            break
+        if fetched >= max_messages:
+            _sync_state["detail"] = f"已达上限 {max_messages} 条，暂停"
+            break
+        items, last_err = None, ""
+        for ps in sizes:                      # 逐级降级重试
+            try:
+                items = client.get_chat_records(room_id, cursor, 1, ps, source_type)
+                break
+            except AuthExpired:
+                _sync_state.update(detail="登录失效，请更新 centraltoken", auth_failed=True,
+                                   next_try=time.time() + 600, running=False, done=True)
+                broadcast({"type": "status", "auth_expired": True})
+                return {"error": "登录失效，请更新 centraltoken"}
+            except NiuLaiError as e:
+                last_err = str(e)
+                continue
+            except Exception as e:            # noqa: BLE001 —— 网络/解码异常也要降级重试
+                last_err = f"{type(e).__name__}: {e}"
+                continue
+        if items is None:
+            error = last_err or "请求失败"
+            _sync_state.update(detail=f"失败：{error}", running=False, done=True)
+            return {"error": error}
+        if not items:
+            _sync_state["detail"] = f"已到最早（共 {fetched} 条）"
+            break
+
+        i += 1
+        t0 = time.time()
+        known = _known_ids(room_id, items)
+        if stop_at_known and not full and known and i > 1:
+            added_total += ingest(room_id, [x for x in items
+                                            if int(x.get("id") or 0) not in known], "rest")
+            _sync_state["detail"] = f"已追上（新增 {added_total} 条）"
+            break
+        added_total += ingest(room_id, items, "rest")
+        fetched += len(items)
+
+        oldest = (items[-1].get("msgDate") or "")[:10]
+        newest = (items[0].get("msgDate") or "")[:10]
+        _sync_state.update(pages=i, fetched=fetched, added=added_total,
+                           oldest=oldest, newest=newest, last_page_ms=int((time.time() - t0) * 1000),
+                           detail=f"已取 {fetched} 条（+{added_total}），最早到 {oldest}")
+        _sync_progress()
+
+        cursor = str(items[-1].get("id") or "")
+        with _db_lock:
+            db.set_sync_state(conn, room_id, source_type, cursor,
+                              max(int(x.get("id") or 0) for x in items))
+        if not cursor:
+            break
+        if until_id and int(cursor) <= until_id:      # 已经翻到指定界线
+            _sync_state["detail"] = f"已到指定位置（共 {fetched} 条）"
+            break
+        if since_date and oldest and oldest < since_date:
+            _sync_state["detail"] = f"已到 {oldest}（不早于 {since_date}，共 {fetched} 条）"
+            break
+        time.sleep(SYNC_SLEEP)
+
+    _sync_state.update(auth_failed=False, running=False, done=True,
+                       detail=(_sync_state["detail"] if error else
+                               f"完成：{_sync_state['pages']} 页 {fetched} 条，新增 {added_total} 条"))
+    _sync_progress()
+    return {"added": added_total, "fetched": fetched, "pages": _sync_state["pages"],
+            "oldest": _sync_state["oldest"]}
+
+
+def _known_ids(room_id: int, items: list) -> set:
+    if not items:
+        return set()
+    ids = [int(x.get("id") or 0) for x in items if int(x.get("id") or 0)]
+    if not ids:
+        return set()
+    ph = ",".join("?" * len(ids))
+    with _db_lock:
+        rows = conn.execute(
+            f"SELECT id FROM messages WHERE room_id=? AND id IN ({ph})", [room_id] + ids).fetchall()
+    return {int(r["id"]) for r in rows}
+
+
+def _sync_worker():
+    """后台增量同步：有 centraltoken 时定期拉最新消息。
+
+    登录失效后 10 分钟内不再重试（避免无意义的错误日志），用户更新 token 后立即恢复。
+    """
+    while True:
+        time.sleep(45)
+        c = cfg()
+        if not c.get("centraltoken") or not c.get("room_id"):
+            continue
+        if _sync_state["running"]:
+            continue
+        if _sync_state["auth_failed"] and time.time() < _sync_state["next_try"]:
+            continue
+        _sync_state["running"] = True
+        try:
+            r = sync_history(pages=2)
+            if r.get("added"):
+                broadcast({"type": "synced", "added": r["added"]})
+        except Exception as e:
+            print(f"[同步] 失败：{e}")
+        finally:
+            _sync_state["running"] = False
+
+# ===================== 页面 =====================
+@app.route("/")
+async def index():
+    c = cfg()
+    return await render_template("index.html",
+                                 room_id=c.get("room_id") or "",
+                                 teacher_id=c.get("teacher_id") or "328")
+
+
+# ===================== 状态 / 配置 API =====================
+@app.route("/api/status")
+async def api_status():
+    c = cfg()
+    with _im_status_lock:
+        ims = dict(_im_state)
+    with _db_lock:
+        st = db.stats(conn, int(c.get("room_id") or 0) or None)
+        rooms = db.list_rooms(conn)
+    return jsonify({
+        "has_token": bool(c.get("centraltoken")),
+        "token_saved_at": c.get("token_saved_at", ""),
+        "teacher_id": c.get("teacher_id", ""),
+        "room_id": c.get("room_id", ""),
+        "my_user_id": c.get("my_user_id", ""),
+        "my_nick_name": c.get("my_nick_name", ""),
+        "im": ims,
+        "sync": dict(_sync_state),
+        "stats": {"total": st["total"], "teacher": st["teacher"], "images": st["images"],
+                  "users": st["users"], "first": st["first"], "last": st["last"]},
+        "rooms": rooms,
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+async def api_settings():
+    """写入配置。支持的键：centraltoken / teacher_id / im_sdk_app_id / im_identifier /
+    im_user_sig / im_group_id / im_enabled。"""
+    data = await request.get_json(force=True) or {}
+    allowed = {"centraltoken", "teacher_id", "room_id", "im_sdk_app_id", "im_identifier",
+               "im_user_sig", "im_group_id", "im_enabled", "my_user_id", "my_nick_name"}
+    changed_im = False
+    with _db_lock:
+        for k, v in data.items():
+            if k not in allowed:
+                continue
+            db.set_setting(conn, k, str(v))
+            if k.startswith("im_"):
+                changed_im = True
+        if "centraltoken" in data:
+            db.set_setting(conn, "token_saved_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if changed_im:
+        restart_im()
+    if data.get("centraltoken"):
+        reset_sync_backoff()
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/probe", methods=["POST"])
+async def api_probe():
+    """验证 centraltoken，并自动带出房间信息 + IM 凭证。"""
+    data = await request.get_json(force=True) or {}
+    token = (data.get("centraltoken") or "").strip()
+    teacher_id = int(data.get("teacher_id") or cfg().get("teacher_id") or 328)
+    if not token:
+        return jsonify({"error": "请填写 centraltoken"}), 400
+    client = TouguClient(token)
+    try:
+        room = client.get_room_by_teacher(teacher_id)
+    except AuthExpired:
+        return jsonify({"error": "centraltoken 已失效（返回 200001），请重新抓取"}), 400
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 400
+
+    out = {"room": {"id": room.get("id"), "name": room.get("name"),
+                    "teacher": room.get("realName") or room.get("teacherName"),
+                    "imGroupId": room.get("imGroupId"), "certificateNum": room.get("certificateNum")}}
+    with _db_lock:
+        db.save_room(conn, room)
+        db.set_setting(conn, "centraltoken", token)
+        db.set_setting(conn, "teacher_id", str(teacher_id))
+        db.set_setting(conn, "room_id", str(room.get("id") or ""))
+        db.set_setting(conn, "im_group_id", room.get("imGroupId") or "")
+        db.set_setting(conn, "token_saved_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
+    # 顺带刷新 IM 凭证 + 我的资料
+    im_ready = False
+    try:
+        sdk = client.get_sdk_app_id()
+        sig = client.get_user_sig()
+        info = client.get_user_info()
+        with _db_lock:
+            db.set_setting(conn, "im_sdk_app_id", str(sdk or ""))
+            db.set_setting(conn, "im_identifier", sig.get("sdkUserId", ""))
+            db.set_setting(conn, "im_user_sig", sig.get("userSig", ""))
+            db.set_setting(conn, "im_enabled", "1")
+            db.set_setting(conn, "my_user_id", str(info.get("userId", "")))
+            db.set_setting(conn, "my_nick_name", info.get("nickName", ""))
+            db.set_setting(conn, "my_avatar", info.get("photo", ""))
+        im_ready = bool(sdk and sig.get("userSig"))
+        out["user"] = {"userId": info.get("userId"), "nickName": info.get("nickName"),
+                       "ynNo": info.get("ynNo")}
+        out["im"] = {"sdkAppId": sdk, "sdkUserId": sig.get("sdkUserId")}
+    except NiuLaiError as e:
+        out["im_error"] = str(e)
+    restart_im()
+    reset_sync_backoff()      # 新 token 生效，同步退避立即解除
+    out["im_ready"] = im_ready
+    return jsonify(out)
+
+
+@app.route("/api/probe-im", methods=["POST"])
+async def api_probe_im():
+    """只验证 IM 凭证是否还能用（连一次腾讯云 IM 做 wslogin）。"""
+    data = await request.get_json(force=True) or {}
+    with _db_lock:
+        c = cfg()
+        sdk = int(data.get("im_sdk_app_id") or c.get("im_sdk_app_id") or 0)
+        ident = data.get("im_identifier") or c.get("im_identifier") or ""
+        sig = data.get("im_user_sig") or c.get("im_user_sig") or ""
+    if not (sdk and ident and sig):
+        return jsonify({"ok": False, "error": "缺少 sdkAppId / identifier / userSig"}), 400
+
+    import websockets
+    from niulai_im import CMD_HEARTBEAT, CMD_LOGIN, decode_frame, encode_frame, \
+        WEBSDK_APPID, WEBSDK_VERSION, SDK_ABILITY
+    import secrets as _secrets
+    import random as _random
+
+    url = (f"wss://{sdk}w4c.my-imcloud.com/binfo?sdkappid={sdk}"
+           f"&instanceid={_secrets.token_hex(16)}&random={_random.random()}&platform=8"
+           f"&host=mac&version=-1&sdkversion=4.4.3&compress=gzip")
+    result = {"ok": False}
+    try:
+        async with websockets.connect(
+                url, origin=f"https://{sdk}w4c.my-imcloud.com",
+                additional_headers={"User-Agent": api.UA, "content-type": "application/json"},
+                max_size=None, open_timeout=12, ping_interval=None) as ws:
+            seq = [1000]
+
+            def frame(cmd, extra=None, body=None):
+                h = {"servcmd": cmd, "ver": "v4", "platform": 8, "websdkappid": WEBSDK_APPID,
+                     "websdkversion": WEBSDK_VERSION, "status_instid": 0, "sdkappid": sdk,
+                     "contenttype": "json", "reqtime": int(time.time()),
+                     "sdkability": SDK_ABILITY, "sdkability_ext": "", "cappid": 0,
+                     "tjgID": "", "seq": seq[0], "cs": 0}
+                seq[0] += 1
+                if extra:
+                    h.update(extra)
+                return encode_frame({"head": h, "body": body or {}})
+
+            await ws.send(frame(CMD_HEARTBEAT))
+            await ws.send(frame(CMD_LOGIN, {"identifier": ident, "usersig": sig},
+                                {"State": "Online", "is_web_uniapp": 0, "InstType": 0,
+                                 "CustomInfo": ""}))
+            end = time.time() + 12
+            while time.time() < end:
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=max(0.1, end - time.time()))
+                except asyncio.TimeoutError:
+                    break
+                try:
+                    o = json.loads(decode_frame(raw))
+                except Exception:
+                    continue
+                if o.get("head", {}).get("servcmd") == CMD_LOGIN:
+                    body = o.get("body") or {}
+                    result = {"ok": bool(body.get("A2Key")),
+                              "errorCode": body.get("ErrorCode"),
+                              "errorInfo": body.get("ErrorInfo"),
+                              "tinyId": body.get("TinyId")}
+                    break
+    except Exception as e:
+        result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return jsonify(result)
+
+
+# ===================== 消息 API =====================
+@app.route("/api/messages")
+async def api_messages():
+    """查询本地已同步的消息。
+
+    两种读法：
+      * **最新优先**（默认，适合 3000+/天 的房间）：`order=desc`，取最新的 size 条，
+        同时返回 `oldest_id`，下次带 `before_id=<oldest_id>` 往历史翻页
+        （前端滚到顶部自动加载）。返回的 messages 已反转为时间正序，直接渲染。
+      * **按天通读**：`date=YYYY-MM-DD&order=asc`，从当天最早开始读。
+    """
+    c = cfg()
+    room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
+    kind = request.args.get("type", "all")
+    date = request.args.get("date", "")
+    keyword = request.args.get("keyword", "").strip()
+    user_id = int(request.args.get("user_id") or 0)
+    days = int(request.args.get("days") or 0)
+    size = min(int(request.args.get("size") or 800), 20000)
+    before_id = int(request.args.get("before_id") or 0)
+    order = (request.args.get("order") or "").lower()
+    if order not in ("asc", "desc"):
+        order = "asc" if date else "desc"
+    start_ts = end_ts = 0
+    if days:
+        # 从「今天 00:00」往前数 days 天（以前写成 now+86400-86400=now，
+        # 导致 days=1 只匹配未来时间戳，今天一条也查不到）
+        t0 = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        day0 = int(t0.timestamp())
+        end_ts = day0 + 86399
+        start_ts = day0 - (max(1, days) - 1) * 86400
+
+    flt = dict(room_id=room_id or None, date=date, start_ts=start_ts, end_ts=end_ts,
+               keyword=keyword, user_id=user_id, only_teacher=(kind == "teacher"),
+               only_reply=(kind in ("reply", "private")))
+    with _db_lock:
+        msgs = db.query_messages(conn, size=size, before_id=before_id, order=order, **flt)
+        total = db.count_filtered(conn, **flt)
+    has_more = len(msgs) == size
+    if order == "desc":
+        msgs.reverse()                      # 倒序取、正序给，前端直接 append
+    out = {"messages": msgs, "count": len(msgs), "total": total,
+           "has_more": has_more, "order": order, "date": date,
+           "oldest_id": (msgs[0].get("id") if msgs else 0),
+           "newest_id": (msgs[-1].get("id") if msgs else 0)}
+    # 选了某天但没数据（比如过了午夜选“今天”、或选了非交易日）→ 告诉前端最近有数据的那天
+    if date and not msgs:
+        with _db_lock:
+            row = conn.execute(
+                "SELECT MAX(substr(msg_date,1,10)) d FROM messages "
+                "WHERE room_id=? AND substr(msg_date,1,10)<=?",
+                (room_id or 0, date)).fetchone()
+        out["nearest_date"] = (row and row["d"]) or ""
+    # 请求日志（排查“看到的是哪天”这类问题只能靠它）
+    print(f"[消息] date={date or '-'} days={days or '-'} order={order} "
+          f"before_id={before_id or '-'} → {len(msgs)} 条"
+          + (f"（{msgs[0]['msg_date'][:10]}~{msgs[-1]['msg_date'][:10]}）" if msgs else ""),
+          flush=True)
+    return jsonify(out)
+
+
+@app.route("/api/messages/search")
+async def api_search():
+    c = cfg()
+    keyword = request.args.get("keyword", "").strip()
+    user_id = int(request.args.get("user_id") or 0)
+    if not keyword and not user_id:
+        return jsonify({"error": "需要 keyword 或 user_id"}), 400
+    room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
+    size = min(int(request.args.get("size") or 300), 2000)
+    with _db_lock:
+        msgs = db.search_messages(conn, keyword or "", room_id or None, user_id=user_id,
+                                  start_date=request.args.get("start_date", ""),
+                                  end_date=request.args.get("end_date", ""), size=size)
+    return jsonify({"total": len(msgs), "messages": msgs})
+
+
+@app.route("/api/stats")
+async def api_stats():
+    c = cfg()
+    with _db_lock:
+        st = db.stats(conn, int(c.get("room_id") or 0) or None)
+    return jsonify(st)
+
+
+@app.route("/api/users/batch")
+async def api_users_batch():
+    uids = [int(x) for x in (request.args.get("uids") or "").split(",") if x.strip().isdigit()]
+    with _db_lock:
+        out = db.users_batch(conn, uids[:500])
+    return jsonify(out)
+
+
+@app.route("/api/users/<int:user_id>")
+async def api_user(user_id: int):
+    with _db_lock:
+        return jsonify(db.get_user_profile(conn, user_id))
+
+
+@app.route("/api/sync", methods=["POST"])
+async def api_sync():
+    """同步历史。
+
+    body:
+      full         true=翻到最早（全量）；false=只拉最新几页（默认）
+      pages        增量模式下最多拉几页（默认 5）
+      page_size    每页条数，实测无上限，默认 1000
+      max_messages 本次最多取多少条，防止失控（默认 200000）
+      since_date   只同步不早于该日期 YYYY-MM-DD 的消息
+      source_type  1=房间消息流（默认），4=老师私聊回复流
+    """
+    data = await request.get_json(force=True) or {}
+    pages = int(data.get("pages") or 5)
+    source = int(data.get("source_type") or api.SRC_ROOM)
+    full = bool(data.get("full"))
+    page_size = max(15, min(int(data.get("page_size") or 1000), 2000))
+    max_messages = max(100, int(data.get("max_messages") or 200000))
+    since_date = (data.get("since_date") or "").strip()
+    c = cfg()
+    if not c.get("room_id"):
+        return jsonify({"error": "尚未确定房间，请先在设置里探测 centraltoken"}), 400
+    # 已确认失效且还在退避窗口内 → 直接告错，不浪费一次请求
+    if _sync_state["auth_failed"] and time.time() < _sync_state["next_try"]:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    if _sync_state["running"]:
+        return jsonify({"error": "已有一个同步任务在跑，稍等", "state": dict(_sync_state)}), 409
+
+    def _bg():
+        _sync_state["running"] = True
+        try:
+            r = sync_history(pages=pages, source_type=source, full=full,
+                             page_size=page_size, max_messages=max_messages,
+                             since_date=since_date)
+            broadcast({"type": "synced", **r})
+        except Exception as e:                                    # noqa: BLE001
+            _sync_state.update(running=False, done=True, detail=f"异常：{e}")
+            _sync_progress()
+            print(f"[同步] 异常：{e}")
+        finally:
+            _sync_state["running"] = False
+            _sync_progress()
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({"status": "started", "pages": pages})
+
+
+@app.route("/api/send", methods=["POST"])
+async def api_send():
+    data = await request.get_json(force=True) or {}
+    c = cfg()
+    room_id = int(c.get("room_id") or 0)
+    if not room_id:
+        return jsonify({"error": "尚未确定房间"}), 400
+    client = _client()
+    try:
+        if data.get("image"):
+            img = data["image"]
+            res = client.send_image(room_id, img.get("imgUrl", ""),
+                                    int(img.get("width") or 0), int(img.get("height") or 0))
+        else:
+            text = (data.get("text") or "").strip()
+            if not text:
+                return jsonify({"error": "消息不能为空"}), 400
+            if len(text) > 2000:
+                return jsonify({"error": "消息过长（上限 2000 字）"}), 400
+            res = client.send_text(room_id, text)
+        return jsonify({"status": "ok", "data": res})
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upload", methods=["POST"])
+async def api_upload():
+    """上传图片（原始字节），返回 {imgUrl,width,height}。"""
+    raw = await request.get_data()
+    if not raw:
+        return jsonify({"error": "图片数据为空"}), 400
+    if len(raw) > 2 * 1024 * 1024:
+        return jsonify({"error": "图片超过 2MB 限制"}), 400
+    ext = (request.args.get("ext") or "png").lower()
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp", "bmp"):
+        ext = "png"
+    try:
+        client = _client()
+        img_url = client.upload_image(raw, ext)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        return jsonify({"error": f"上传失败：{e}"}), 500
+    w, h = api.image_size(raw)
+    # 上传成功即本地缓存原图，发送后可立即显示
+    try:
+        name = _cache_name(api.media_url(img_url), "image")
+        with open(os.path.join(IMAGE_DIR, name), "wb") as f:
+            f.write(raw)
+        with _db_lock:
+            db.save_media(conn, f"image:{api.media_url(img_url)}", api.media_url(img_url),
+                          name, "image", len(raw))
+    except Exception:
+        pass
+    return jsonify({"imgUrl": img_url, "width": w, "height": h})
+
+
+# ===================== 媒体服务 =====================
+@app.route("/api/media")
+async def api_media():
+    """按远端 URL 代理并缓存图片/头像：/api/media?u=<urlencoded>&kind=image|avatar"""
+    url = request.args.get("u", "")
+    kind = request.args.get("kind", "image")
+    if kind not in ("image", "avatar"):
+        kind = "image"
+    if not url:
+        abort(404)
+    name = cache_media(url, kind)
+    if not name:
+        abort(404)
+    resp = await send_file(os.path.join(_media_dir(kind), name))
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+@app.route("/api/media/local/<kind>/<path:name>")
+async def api_media_local(kind: str, name: str):
+    d = _media_dir(kind)
+    if not os.path.exists(os.path.join(d, name)):
+        abort(404)
+    resp = await send_file(os.path.join(d, name))
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ===================== 备份 =====================
+@app.route("/api/backup", methods=["POST"])
+async def api_backup():
+    import shutil
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = os.path.join(BACKUP_DIR, f"niulai_{ts}.db")
+    try:
+        with _db_lock:
+            conn.commit()
+        shutil.copy2(DB_PATH, path)
+        return jsonify({"status": "ok", "file": os.path.basename(path),
+                        "size": os.path.getsize(path)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ===================== WebSocket =====================
+@app.websocket("/ws")
+async def ws_handler():
+    with _im_status_lock:
+        ims = dict(_im_state)
+    await websocket.send(json.dumps({"type": "status", "im_state": ims["state"],
+                                     "im_detail": ims["detail"]}, ensure_ascii=False))
+    ws = websocket._get_current_object()
+    with _ws_lock:
+        _ws_clients.add(ws)
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(websocket.receive(), timeout=120)
+                if isinstance(msg, str) and msg == "ping":
+                    await websocket.send('{"type":"pong"}')
+            except asyncio.TimeoutError:
+                break
+    except Exception:
+        pass
+    finally:
+        with _ws_lock:
+            _ws_clients.discard(ws)
+
+
+# ===================== 启动 =====================
+@app.before_serving
+async def startup():
+    global _loop
+    _loop = asyncio.get_running_loop()
+    seed_from_env()
+    asyncio.create_task(_broadcast_loop())
+    threading.Thread(target=_prefetch_worker, daemon=True).start()
+    threading.Thread(target=_im_supervisor, daemon=True).start()
+    threading.Thread(target=_sync_worker, daemon=True).start()
+    c = cfg()
+    print("=" * 56)
+    print("约牛聊天室 Web 服务")
+    print(f"  房间 room_id={c.get('room_id') or '(未设置)'}  teacher_id={c.get('teacher_id') or '(未设置)'}")
+    print(f"  鉴权：{'已配置 centraltoken' if c.get('centraltoken') else '未配置（只能浏览本地库）'}")
+    print(f"  IM  ：{'已配置 userSig' if c.get('im_user_sig') else '未配置（无实时消息）'}")
+    print("=" * 56)

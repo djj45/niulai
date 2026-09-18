@@ -1,0 +1,17 @@
+[project]
+name = "niulai"
+version = "0.1.0"
+description = "约牛聊天室 Web 工具：登录/鉴权 + 历史消息 + 腾讯云IM实时消息 + 图片收发 + 本地 Web 界面"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "quart",
+    "hypercorn",
+    "websockets>=12.0",
+    "requests",
+    "python-dotenv",
+    "pillow",
+]
+
+[tool.uv]
+package = false
