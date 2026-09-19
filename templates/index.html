@@ -276,7 +276,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     <div class="search-box">
       <div class="row">
         <input type="text" id="searchInput" placeholder="🔍 搜索消息关键词…"
-               onkeydown="if(event.key==='Enter')doSearch()">
+               onkeydown="onSearchKeydown(event)">
         <input type="text" id="userIdInput" placeholder="用户ID" style="width:88px">
         <button onclick="doSearch()">搜索</button>
         <button onclick="clearSearch()">清除</button>
@@ -1060,11 +1060,48 @@ document.addEventListener("DOMContentLoaded", () => {
 // ===================== 发送 =====================
 let pendingImage = null;
 
+// ===================== 输入法（IME）合成处理 =====================
+// 中文/日文输入法打字时，回车是「确认候选词」，不应该当成发送。
+// 坑在事件顺序：Chromium（Edge/Chrome）是 compositionend → keydown，
+// 所以处理 keydown 时 ev.isComposing 已经是 false 了，光判断它没用在。
+// 三种信号一起用：
+//   1) imeComposing      —— compositionstart 到 compositionend 之间
+//   2) ev.isComposing / keyCode === 229 —— 标准与旧版信号（Safari/Firefox 顺序不同，这两个能币住）
+//   3) 刚 compositionend 的极短宽限窗口 —— 专门币住 Chromium 那次确认回车
+let imeComposing = false;
+let imeEndedAt = 0;
+const IME_GRACE_MS = 80;
+
+// 挂在 document 上用捕获阶段，这样发送框/搜索框/设置里的输入框全都覆盖
+for (const ev of ["compositionstart", "compositionend"]) {
+  document.addEventListener(ev, e => {
+    if (ev === "compositionstart") {
+      imeComposing = true;
+    } else {
+      imeComposing = false;
+      imeEndedAt = Date.now();
+    }
+  }, true);
+}
+
+/** 这次回车是不是「输入法确认候选词」。是就别 preventDefault，让输入法自己处理。 */
+function isImeEnter(ev) {
+  return imeComposing || ev.isComposing || ev.keyCode === 229 ||
+         (Date.now() - imeEndedAt) < IME_GRACE_MS;
+}
+
 function onSendKeydown(ev) {
-  if (ev.key === "Enter" && !ev.shiftKey) {
-    ev.preventDefault();
-    sendMsg();
-  }
+  if (ev.key !== "Enter" || ev.shiftKey) return;
+  if (isImeEnter(ev)) return;      // 确认候选词的回车 → 只把它当普通输入
+  ev.preventDefault();
+  sendMsg();
+}
+
+function onSearchKeydown(ev) {
+  if (ev.key !== "Enter") return;
+  if (isImeEnter(ev)) return;
+  ev.preventDefault();
+  doSearch();
 }
 async function sendMsg() {
   const box = document.getElementById("sendInput");

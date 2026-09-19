@@ -417,6 +417,22 @@ A：已修。两个原因叠在一起：① API 对 `order=desc` 已返回时间
 变成新→旧，所以贴底后看到的“最后一条”实际上是当天最早的；② 最新那条被顶到了看不见的顶部。
 现在左右栏都是时间正序、贴底即最新（实测：首条 08:11 早盘预案，末条 15:25 最新回复）。
 
+**Q：用中文输入法打字，按回车确认候选词时消息直接被发出去了？**
+A：已修。原来的 `onSendKeydown` 只判断 `ev.key === "Enter"`，而“回车确认候选词”
+也是一次 Enter，于是被当成发送；更糟的是那个 `preventDefault()` 还会连带吃掉
+输入法的确认动作（你打的字根本没落进输入框）。
+
+坑在事件顺序：**Chromium（Edge/Chrome）是 `compositionend` → `keydown`**，
+所以在 keydown 里 `ev.isComposing` 已经是 `false`，单靠它挡不住；
+Safari/Firefox 的顺序又不一样。现在三种信号一起用（`isImeEnter()`）：
+
+1. `imeComposing` —— `compositionstart` 到 `compositionend` 之间
+2. `ev.isComposing` / `ev.keyCode === 229` —— 标准与旧版信号
+3. `compositionend` 之后 **80ms** 宽限窗口 —— 专门挡 Chromium 那次确认回车
+
+确认候选词的回车**不** `preventDefault()`，交给输入法正常提交；
+发送框（`onSendKeydown`）和搜索框（`onSearchKeydown`）都走这套判断。
+
 **Q：老师栏往上翻时滚动条抽搐、停一会又自动贴底？**
 A：有两个来源，都修了。
 
