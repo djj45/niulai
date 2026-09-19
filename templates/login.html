@@ -37,6 +37,15 @@
   #captcha-box { margin:4px 0 14px; }
   .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:3px;
          background:#eef3ff; color:var(--accent); margin-left:6px; }
+  .diag-head { display:none; align-items:center; justify-content:space-between;
+               margin-top:14px; padding-top:10px; border-top:1px dashed var(--border);
+               font-size:12px; color:var(--muted); }
+  .diag-head.show { display:flex; }
+  .diag { display:none; margin:8px 0 0; padding:10px; max-height:260px; overflow:auto;
+          background:#1f2329; color:#d6dde8; border-radius:5px; font-size:11px;
+          line-height:1.6; white-space:pre-wrap; word-break:break-all; }
+  .diag.show { display:block; }
+  button.tiny { padding:2px 10px; font-size:11px; }
 </style>
 </head>
 <body>
@@ -67,6 +76,11 @@
       <button class="ghost" onclick="usePastedParam()">用粘贴的票据直接登录</button>
     </div>
     <div class="msg" id="msg"></div>
+    <div class="diag-head" id="diagHead">
+      <span>诊断信息（组件起不来时才用得上）</span>
+      <button class="ghost tiny" onclick="copyDiag()">复制</button>
+    </div>
+    <pre class="diag" id="diag"></pre>
   </div>
 
   <div class="card hint">
@@ -84,17 +98,78 @@
 </div>
 
 <script>
-  // 阿里云 Web 接入要求**先**设这个全局，SDK 内部会读 t.AliyunCaptchaConfig.{region,prefix}
-  // （之前漏了，prefix 没生效 → 可能导致 init 失败）
-  window.AliyunCaptchaConfig = { region: "cn", prefix: "nl" };
+// 阿里云 Web 接入要求**先**设这个全局，SDK 内部会读 t.AliyunCaptchaConfig.{region,prefix}
+window.AliyunCaptchaConfig = { region: "cn", prefix: "nl" };
+
+// ===================== 诊断采集（必须在 SDK 之前装上） =====================
+// 组件起不来时，onError 往往只给一个 code、msg 是空的（实测如此），
+// 真正的原因在**网络请求**和**SDK 自己的 console 输出**里，所以都拦一份。
+const diag = [];
+function j(v) {
+  try { return typeof v === "object" ? JSON.stringify(v) : String(v); }
+  catch (e) { return String(v); }
+}
+function dline(tag, text) {
+  diag.push(`[${new Date().toLocaleTimeString()}] ${tag} ${text}`.trim());
+  const el = document.getElementById("diag");
+  if (!el) return;
+  el.textContent = diag.slice(-60).join("\n");
+  el.classList.add("show");
+  const h = document.getElementById("diagHead");
+  if (h) h.classList.add("show");
+}
+for (const k of ["error", "warn"]) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => { dline("console." + k + ":", a.map(j).join(" ")); orig(...a); };
+}
+window.addEventListener("error", e =>
+  dline("window.onerror:", `${e.message || ""} @ ${e.filename || ""}:${e.lineno || ""}`));
+window.addEventListener("unhandledrejection", e =>
+  dline("unhandledrejection:", j((e.reason && (e.reason.message || e.reason)) || "")));
+document.addEventListener("error", e => {
+  const t = e.target;
+  if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
+    dline("资源加载失败:", `${t.tagName} ${t.src || t.href || ""}`);
+  }
+}, true);
+const _xopen = XMLHttpRequest.prototype.open;
+const _xsend = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open = function (m, u, ...rest) {
+  this.__d = { m, u: String(u) };
+  return _xopen.call(this, m, u, ...rest);
+};
+XMLHttpRequest.prototype.send = function (...a) {
+  this.addEventListener("loadend", () => {
+    const u = (this.__d && this.__d.u) || "";
+    const st = this.status;
+    const aliyun = /aliyun|alicdn|captcha/i.test(u);
+    if (st === 0) dline("XHR 失败:", `${this.__d ? this.__d.m : ""} ${u} → status=0（网络层挂了：被墙/代理/证书？）`);
+    else if (st >= 400) dline("XHR 出错:", `${this.__d ? this.__d.m : ""} ${u} → ${st} ${String(this.responseText || "").slice(0, 300)}`);
+    else if (aliyun) dline("XHR ok:", `${u} → ${st} ${String(this.responseText || "").slice(0, 300)}`);
+  });
+  return _xsend.apply(this, a);
+};
+function copyDiag() {
+  const txt = `sceneId=${window.__SCENE_ID || "?"} from=${window.__SCENE_FROM || "(源码常量)"}\n`
+    + `UA=${navigator.userAgent}\n\n` + diag.join("\n");
+  (navigator.clipboard ? navigator.clipboard.writeText(txt) : Promise.reject())
+    .then(() => { const e = document.getElementById("msg");
+                  e.textContent = "✅ 诊断信息已复制，直接贴给我就行。";
+                  e.className = "msg ok"; })
+    .catch(() => { const el = document.getElementById("diag");
+                   el.textContent = txt; el.classList.add("show");
+                   const h = document.getElementById("diagHead"); if (h) h.classList.add("show"); });
+}
 </script>
 <script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
 <script>
 const SCENE_ID = "{{ scene_id }}";
 const SCENE_FROM = "{{ scene_from }}";
+// 给上面那段诊断脚本用（它们先于本段执行，拿不到这里的变量）
+window.__SCENE_ID = SCENE_ID;
+window.__SCENE_FROM = SCENE_FROM;
 let captchaInstance = null;
-let busy = false;
-let lastPayload = "";
+let sdkReady = false;
 
 /** 把错误对象的每一层都展开，尤其是 err.msg —— 真正原因都在那里 */
 function explain(obj) {
@@ -125,6 +200,9 @@ $("sceneTag").textContent = "sceneId=" + SCENE_ID + (SCENE_FROM ? `（页面显�
 if (SCENE_FROM) {
   $("sceneTag").title = "当前值来源：" + SCENE_FROM;
 }
+
+/** 正在跑的真实登录流程（避免重复触发） */
+let loginInFlight = false;
 
 /** 真正干活：拿票据 + 账密去登录 */
 async function doLogin(param) {
@@ -162,16 +240,17 @@ async function doLogin(param) {
  */
 async function captchaVerifyCallback(captchaVerifyParam) {
   $("paramBox").value = captchaVerifyParam;
-  lastPayload = captchaVerifyParam;
+  dline("captchaVerifyCallback:", String(captchaVerifyParam).slice(0, 300));
 
   let obj = null;
   try { obj = JSON.parse(captchaVerifyParam); } catch (e) { obj = null; }
   if (obj && obj.err) {
     const detail = explain(obj.err);
-    say("❌ 验证码初始化/验证失败，没有拿到可用票据。\n\n"
+    dline("票据无效（含 err）:", detail || JSON.stringify(obj.err));
+    say("❌ 没拿到可用票据 —— SDK 交上来的是**失败上报对象**：\n\n"
       + (detail || JSON.stringify(obj.err))
       + "\n\n完整上报对象：\n" + JSON.stringify(obj)
-      + "\n\n（把上面这段发给我，尤其 msg 那行，就能判定是场景配置问题还是我这边接错了）", "err");
+      + "\n\n（原因看下方诊断面板）", "err");
     return { captchaResult: true, bizResult: false };
   }
   const ok = await doLogin(captchaVerifyParam);
@@ -180,15 +259,15 @@ async function captchaVerifyCallback(captchaVerifyParam) {
 function onBizResultCallback(ok) { if (!ok) say("验证码未通过（详情见上）", "err"); }
 function getInstance(inst) { captchaInstance = inst; }
 
-/** SDK 内部错误会走这里，msg 是真原因 */
+/** SDK 内部错误会走这里。注意 msg 可能为空（实测就是），所以同时提示看诊断面板 */
 function onCaptchaError(e) {
   const detail = e ? explain(e) : "(空)";
-  say("❌ 验证码 SDK 报错：\n" + detail
-    + "\n\n常见原因：\n"
-    + "· 该 sceneId 只在阿里云控制台配了「小程序」接入方式（那我们改不了）\n"
-    + "· 场景未配置当前域名 / 未开启 Web 接入\n"
-    + "· 场景被限流（LIMIT_FLOW）\n\n"
-    + "不管哪种，都可以直接用：tools/proxy_capture.sh on 抓现成 token。", "err");
+  dline("onCaptchaError:", JSON.stringify(e || {}));
+  say("❌ 验证码组件初始化失败（**和你输入的账号密码无关** —— 组件是页面加载时就初始化的，\n"
+    + "   失败发生在任何凭证参与之前）。\n\n"
+    + (detail ? detail + "\n\n" : "")
+    + "下方诊断面板里有 SDK 的真实网络请求和日志，点「复制」发我就能定位。\n"
+    + "（大概率为场景只配了小程序接入 / 域名未白名单，那就直接用 tools/proxy_capture.sh on）", "err");
 }
 
 /** 兜底：不触发滑块，直接用文本框里粘贴的票据登录 */
@@ -214,12 +293,27 @@ function manualSubmit() {
   say("验证码组件还没就绪；可以等它加载完，或粘贴票据后点右边那个按钮", "err");
 }
 
-(function initCaptcha() {
-  if (typeof window.initAliyunCaptcha !== "function") {
-    say("阿里云验证码 SDK 没加载出来（网络/代理问题？）。\n"
-      + "不影响：如果别处能拿到 captchaVerifyParam，粘进上面那个框照样能登录。", "err");
-    return;
-  }
+// ===================== 等 SDK 就绪后初始化 =====================
+// 本脚本现在跑在 SDK 的 <script> **之前**（为了让诊断先装上），
+// 所以不能直接调 initAliyunCaptcha —— 轮询等它到达，再初始化。
+function whenSdkReady(fn, timeoutMs = 8000) {
+  const t0 = Date.now();
+  (function poll() {
+    if (typeof window.initAliyunCaptcha === "function") { sdkReady = true; return fn(); }
+    if (Date.now() - t0 > timeoutMs) {
+      dline("SDK 未就绪:", `等了 ${timeoutMs}ms 还没看到 window.initAliyunCaptcha`);
+      say("阿里云验证码 SDK 没加载出来（网络/代理/证书问题？）。\n"
+        + "不影响拿 token：用 tools/proxy_capture.sh on 抓现成的。", "err");
+      return;
+    }
+    setTimeout(poll, 100);
+  })();
+}
+
+whenSdkReady(function initCaptcha() {
+  // 初始化时机记一笔：组件是**页面加载时就初始化**的（不是等你点按钮才起），
+  // 所以初始化失败会在你输入任何东西之前就报出来 —— 与账号密码无关。
+  dline("SDK 就绪:", "开始 initAliyunCaptcha（sceneId=" + SCENE_ID + "）");
   try {
     window.initAliyunCaptcha({
       SceneId: SCENE_ID,
@@ -244,12 +338,13 @@ function manualSubmit() {
     window.nlOnBizResultCallback = onBizResultCallback;
     window.nlGetInstance = getInstance;
     window.nlCaptchaError = onCaptchaError;
+    dline("init 已调用:", "没有同步抛错，等 onError / 回调");
   } catch (e) {
-    say("验证码初始化异常：" + e
-      + "\n（若提示场景不存在，说明这个 sceneId 只配了小程序端，Web SDK 用不了——\n"
-      + "  那就走抓包：见 tools/capture_login.py）", "err");
+    dline("init 抛异常:", String(e && (e.message || e)));
+    say("验证码初始化异常：" + (e && (e.message || e))
+      + "\n（详细信息见下方诊断）", "err");
   }
-})();
+});
 </script>
 </body>
 </html>
