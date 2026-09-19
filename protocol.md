@@ -371,6 +371,72 @@ r = "1.0" === _Config.verifyType ? n
 
 另：源码 config 模块泄露了全套测试环境域名（`test-account.zx093.cn`、`touguapi-test.zx093.com` 等）。
 
+## 附1.6：为什么不“从 web 模拟小程序接入”（结论：不值得）
+
+小程序插件能跑、Web SDK 跑不起来，自然想到“那就在浏览器里模拟小程序”。
+结论是：**不是做不到，而是代价与收益完全不成比例**。
+
+### 1. 插件和 Web SDK 是两套完全不同的 API 面
+
+| | Web SDK | 小程序插件 |
+|---|---|---|
+| 端点 | `https://<prefix>.captcha-open.aliyuncs.com/`，明文规范 | **字符串表混淆**：`p(450)+p(478)+p(479)+p(564)+p(517)` 这种索引拼接，还带 `.split("").reverse().join("")` 反转 |
+| 端点常量 | 固定几个 | `ENDPOINTS` / `CN_ENDPOINTS` / `INTL_ENDPOINTS` / `WAF_ENDPOINTS` / `apiServers` / `apiDevServers` / `cdnServers` —— 一套带故障转移的服务器池 |
+| 身份标识 | **`userTag`（即 prefix）** | 微信插件 provider appid `wxbe275ff84246f1a4` |
+| 请求形态 | 直接 JSON | 带 `ACCESS_KEY` / `WEB_AES_SECRET_KEY` / `AES_IV` / `SALT` / `ALGO_TYPE` / `API_VERSION` / **`PLATFORM`** / **`DEVICE_TYPE`** |
+
+### 2. 关键差异：为什么插件不需要 userTag
+
+- Web 接入需要 `userTag`，因为“一个网页”没有天然身份 —— 得让约牛去阿里云控制台**注册一个**
+  （他们没做，所以报 `IllegalUserTag`）。
+- 小程序插件**不需要**，初始化只传 `{SceneId, mode, success}`，因为**微信本身就是身份** ——
+  阿里云通过微信插件 provider appid + 微信运行环境认它。
+
+所以“从 web 模拟小程序接入”的实际含义是**冒充微信小程序环境**。而 `PLATFORM` / `DEVICE_TYPE`
+这些字段，加上 `cloudauth-device-*.aliyuncs.com`（阿里云**安全设备指纹**服务，实测返回 `DeviceConfig`），
+存在的目的就是识别这件事。
+
+### 3. 就算硬做，收益也是零
+
+| 步骤 | 可行性 |
+|---|---|
+| 反混淆字符串表（标准 webpack 字符串表，`webcrack` 之类可做） | 可以 |
+| 实现它的 AES 加密 + 签名（密钥也在表里） | 可以 |
+| **通过阿里云风控**（非微客户端声称自己是小程序） | 不是“实现”，是“赌” |
+| **手动拖滑块** | 逃不掉 |
+
+最后一行是决定性的：就算全打通，也只是把“开一次小程序窗口”换成“在自写页面里拖滑块”，
+**用户操作量没减少**，中间多了几百行随时会被版本更新打断的逆向代码。
+
+### 4. 该怎么做
+
+`tools/proxy_capture.sh on` → 小程序窗口关掉重开 → 进任意老师聊天室 → `off`。
+全程约 10 秒，不涉及冒充平台，也不对抗风控。
+
+---
+
+## 附1.7：centraltoken 寿命追踪
+
+token 失效时约牛**不会主动告知**（只在业务接口返回 `200001`），所以以前只能等后台同步
+静默中断才发现。现在把它记成数据：
+
+- 表 `token_log`：`prefix`（只存前 12 位）/ `source` / `set_at` / `set_ts` /
+  `ended_at` / `ended_ts` / `lifetime` / `reason`
+- **签发**：`probe`（`/api/probe`）、`login`（`/api/login/password`）、`settings`（页面手填）、
+  `migrated`（老库迁移，用 `token_saved_at` 回填真实起点）
+- **失效**：`_on_token_expired()` —— 挂在 `TouguClient(on_token_expired=...)` 上，
+  任何业务请求遇到 `200001` 都会触发（同步 / 发消息 / 上传全覆盖），幂等
+- `reason` 区分 `expired`（真的过期）与 `replaced`（被手动换掉）。**统计只算 expired**，
+  否则“换了 token”会被误当成“寿命这么短”
+- `/api/status` 的 `token` 字段给出 `age_sec` / `eta_sec`（中位数 − 已用）/ `warn`
+  （已用 > 中位 80%）/ `lifetime_min|median|max` / 最近 6 条 `history`
+- 界面：顶栏 `🕐 已用 N`（悬停看历史与推算）、超 80% 时变黄并进黄色横幅、
+  统计弹窗里也列一行
+
+有了几个过期样本后，就能预判“大概什么时候该刷新”，不用等断了才发现。
+
+---
+
 ## 附2：Mac 微信 4.x 小程序包（wxapkg）解密方法
 
 路径：`~/Library/Containers/com.tencent.xinWeChat/Data/Documents/app_data/radium/users/<hash>/applet/packages/<appid>/<ver>/*.wxapkg`（wxid 见 `…/Documents/xwechat_files/` 下目录名）

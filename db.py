@@ -114,6 +114,18 @@ CREATE TABLE IF NOT EXISTS sync_state (
     updated_at  TEXT,
     PRIMARY KEY (room_id, source_type)
 );
+CREATE TABLE IF NOT EXISTS token_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    prefix     TEXT,                -- centraltoken 前 12 位（不存全量）
+    source     TEXT,                -- 来源：probe / login / settings / seed
+    set_at     TEXT,                -- 'YYYY-MM-DD HH:MM:SS'
+    set_ts     INTEGER,             -- unix 秒，便于算时长
+    ended_at   TEXT,
+    ended_ts   INTEGER DEFAULT 0,   -- 0 = 仍在使用
+    lifetime   INTEGER DEFAULT 0,   -- 秒
+    reason     TEXT                 -- expired / replaced
+);
+CREATE INDEX IF NOT EXISTS idx_token_log_open ON token_log(ended_ts);
 """
 
 
@@ -152,6 +164,79 @@ def get_settings(conn, keys) -> dict:
     for k in keys:
         out[k] = get_setting(conn, k)
     return out
+
+
+# ===================== centraltoken 寿命追踪 =====================
+# 目的：知道 token 实际能活多久，好在它过期前主动刷新，
+# 而不是等后台同步静默中断了才发现（约牛不会主动告知）。
+# 只存 token 前 12 位，绝不落全量。
+TOKEN_REASONS = ("expired", "replaced")
+
+
+def _now_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def token_issued(conn, prefix: str, source: str = "", now: int | None = None) -> int:
+    """记录一次 token 签发。
+
+    会把上一条**未结束**的记录收尾：若它和新 token 不是同一个（prefix 不同），
+    算作 `replaced`（被换掉，不等于过期），这样不会污染“真实寿命”统计。
+    now 可传历史时间戳，用于老库迁移。
+    """
+    now = int(now or time.time())
+    at = datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S")
+    open_row = conn.execute(
+        "SELECT id, prefix, set_ts FROM token_log WHERE ended_ts=0 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if open_row:
+        rid, old_prefix, old_ts = open_row
+        if old_prefix != prefix:          # 换了一个新 token → 旧的收尾为 replaced
+            conn.execute(
+                "UPDATE token_log SET ended_at=?, ended_ts=?, lifetime=?, reason='replaced' WHERE id=?",
+                (at, now, max(0, now - int(old_ts or now)), rid))
+        else:
+            # 同一个 token 又报一次，不重复建行（保留最早的 set_ts 作为起点）
+            conn.commit()
+            return rid
+    cur = conn.execute(
+        "INSERT INTO token_log(prefix, source, set_at, set_ts) VALUES(?,?,?,?)",
+        (prefix, source, at, now))
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def token_mark_expired(conn, now: int | None = None, reason: str = "expired") -> bool:
+    """把当前未结束的记录收尾。幂等：没有未结束的行就什么都不做。"""
+    now = int(now or time.time())
+    row = conn.execute(
+        "SELECT id, set_ts FROM token_log WHERE ended_ts=0 ORDER BY id DESC LIMIT 1").fetchone()
+    if not row:
+        return False
+    rid, set_ts = row
+    conn.execute("UPDATE token_log SET ended_at=?, ended_ts=?, lifetime=?, reason=? WHERE id=?",
+                 (datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M:%S"),
+                  now, max(0, now - int(set_ts or now)), reason, rid))
+    conn.commit()
+    return True
+
+
+def token_open(conn) -> dict | None:
+    """当前仍在用的那条记录。"""
+    r = conn.execute("SELECT id, prefix, source, set_at, set_ts FROM token_log "
+                     "WHERE ended_ts=0 ORDER BY id DESC LIMIT 1").fetchone()
+    if not r:
+        return None
+    return {"id": r[0], "prefix": r[1], "source": r[2], "set_at": r[3], "set_ts": r[4]}
+
+
+def token_history(conn, limit: int = 12) -> list:
+    """最近几条已结束的记录（含过期与被换掉）。"""
+    rows = conn.execute(
+        "SELECT prefix, source, set_at, ended_at, lifetime, reason FROM token_log "
+        "WHERE ended_ts>0 ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [{"prefix": r[0], "source": r[1], "set_at": r[2], "ended_at": r[3],
+             "lifetime": r[4], "reason": r[5]} for r in rows]
 
 
 # ===================== 房间 =====================

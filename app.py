@@ -142,8 +142,94 @@ def seed_from_env():
 
 def _client() -> TouguClient:
     c = cfg()
-    return TouguClient(c.get("centraltoken", ""), on_token_expired=lambda: broadcast(
-        {"type": "status", "auth_expired": True}))
+    return TouguClient(c.get("centraltoken", ""), on_token_expired=_on_token_expired)
+
+
+# ===================== centraltoken 寿命追踪 =====================
+def _on_token_expired():
+    """任何业务请求遇到 200001 都会走到这里（同步/发消息/上传…）。
+
+    这是“token 真的失效了”最可靠的信号 —— 约牛不会主动告知，一切以业务返回为准。
+    """
+    marked = False
+    with _db_lock:
+        try:
+            marked = db.token_mark_expired(conn)
+        except Exception as e:                              # noqa: BLE001
+            print(f"[token] 记录失效失败：{e}")
+    if marked:
+        st = token_status()
+        used = st.get("age_sec") or 0
+        print(f"[token] 已失效，本次共用了 {used / 3600:.1f} 小时")
+        broadcast({"type": "token", "data": st})
+    broadcast({"type": "status", "auth_expired": True})
+
+
+def record_token_issued(token: str, source: str = ""):
+    """记录一次 token 签发（probe / login / settings / seed 都会调）。"""
+    if not token:
+        return
+    with _db_lock:
+        try:
+            db.token_issued(conn, token[:12] + "…", source)
+        except Exception as e:                              # noqa: BLE001
+            print(f"[token] 记录签发失败：{e}")
+
+
+def seed_token_log():
+    """老库迁移：当前已有 token 但 token_log 里没记录时，按 token_saved_at 补登一条。
+
+    只用 unix 时间戳作 set_ts，所以寿命从真实起点（而不是本次启动）算。
+    """
+    c = cfg()
+    token = (c.get("centraltoken") or "").strip()
+    if not token:
+        return
+    with _db_lock:
+        if db.token_open(conn):
+            return
+        try:
+            ts = int(datetime.strptime(c.get("token_saved_at") or "",
+                                      "%Y-%m-%d %H:%M:%S").timestamp())
+        except ValueError:
+            ts = int(time.time())
+        db.token_issued(conn, token[:12] + "…", "migrated", now=ts)
+    print(f"[token] 已补登寿命记录（签发于 {datetime.fromtimestamp(ts):%Y-%m-%d %H:%M:%S}）")
+
+
+def token_status() -> dict:
+    """token 寿命概览：已用多久、预计还能用多久、历史样本。"""
+    import statistics
+    c = cfg()
+    saved = c.get("token_saved_at") or ""
+    with _db_lock:
+        op = db.token_open(conn)
+        hist = db.token_history(conn, 12)
+    # 以记录为准，没有记录（老库/手动改过）就退回 token_saved_at
+    set_ts = op["set_ts"] if op and op.get("set_ts") else 0
+    if not set_ts and saved:
+        try:
+            set_ts = int(datetime.strptime(saved, "%Y-%m-%d %H:%M:%S").timestamp())
+        except ValueError:
+            set_ts = 0
+    age = max(0, int(time.time()) - set_ts) if set_ts else 0
+    # 真寿司只看 expired（replaced 是被手动换掉，不能当过期末尾）
+    real = [h["lifetime"] for h in hist if h.get("reason") == "expired" and h.get("lifetime")]
+    est = int(statistics.median(real)) if real else 0
+    out = {
+        "prefix": (op or {}).get("prefix", (c.get("centraltoken") or "")[:13]),
+        "source": (op or {}).get("source", ""),
+        "set_at": (op or {}).get("set_at", saved),
+        "age_sec": age,
+        "samples": len(real),
+        "lifetime_min": min(real) if real else 0,
+        "lifetime_median": est,
+        "lifetime_max": max(real) if real else 0,
+        "eta_sec": max(0, est - age) if est else 0,
+        "warn": bool(est and age > est * 0.8),
+        "history": hist[:6],
+    }
+    return out
 
 
 # ===================== 媒体缓存代理 =====================
@@ -710,7 +796,7 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
             except AuthExpired:
                 _sync_state.update(detail="登录失效，请更新 centraltoken", auth_failed=True,
                                    next_try=time.time() + 600, running=False, done=True)
-                broadcast({"type": "status", "auth_expired": True})
+                _on_token_expired()
                 return {"error": "登录失效，请更新 centraltoken"}
             except NiuLaiError as e:
                 last_err = str(e)
@@ -863,6 +949,7 @@ async def api_status():
     return jsonify({
         "has_token": bool(c.get("centraltoken")),
         "token_saved_at": c.get("token_saved_at", ""),
+        "token": token_status(),
         "captcha_scene_id": captcha_scene_id(),
         "captcha_scene_from": c.get("captcha_scene_from", ""),
         "teacher_id": c.get("teacher_id", ""),
@@ -896,6 +983,8 @@ async def api_settings():
                 changed_im = True
         if "centraltoken" in data:
             db.set_setting(conn, "token_saved_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    if data.get("centraltoken"):
+        record_token_issued(str(data["centraltoken"]).strip(), "settings")
     if changed_im:
         restart_im()
     if data.get("centraltoken"):
@@ -903,7 +992,7 @@ async def api_settings():
     return jsonify({"status": "ok"})
 
 
-def apply_centraltoken(token: str, teacher_id: int) -> tuple[dict, str]:
+def apply_centraltoken(token: str, teacher_id: int, source_hint: str = "probe") -> tuple[dict, str]:
     """校验 centraltoken 并落库：房间信息 + IM 凭证 + 我的资料。
 
     返回 (结果, 错误串)。/api/probe（粘贴 token）与 /api/login/password
@@ -928,6 +1017,7 @@ def apply_centraltoken(token: str, teacher_id: int) -> tuple[dict, str]:
         db.set_setting(conn, "room_id", str(room.get("id") or ""))
         db.set_setting(conn, "im_group_id", room.get("imGroupId") or "")
         db.set_setting(conn, "token_saved_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    record_token_issued(token, "probe" if source_hint == "probe" else "login")
 
     # 顺带刷新 IM 凭证 + 我的资料
     im_ready = False
@@ -999,7 +1089,7 @@ async def api_login_password():
     except Exception as e:                                  # noqa: BLE001
         return jsonify({"error": f"请求异常：{e}"}), 500
     out, err = await asyncio.to_thread(apply_centraltoken, token,
-                                       int(cfg().get("teacher_id") or 328))
+                                       int(cfg().get("teacher_id") or 328), "login")
     if err:
         return jsonify({"error": f"登录成功但校验失败：{err}", "token": token}), 400
     out["token_len"] = len(token)
@@ -1418,6 +1508,7 @@ async def startup():
     global _loop
     _loop = asyncio.get_running_loop()
     seed_from_env()
+    seed_token_log()
     asyncio.create_task(_broadcast_loop())
     threading.Thread(target=_prefetch_worker, daemon=True).start()
     threading.Thread(target=_im_supervisor, daemon=True).start()

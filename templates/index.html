@@ -36,6 +36,8 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   border-radius: 4px; font-size: 13px; }
 .topbar .cal-group button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .topbar .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.topbar .token-age { font-size: 12px; color: var(--muted); cursor: help; white-space: nowrap; }
+.topbar .token-age.warn { color: #e8590c; font-weight: 600; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
 .dot.on { background: var(--me); box-shadow: 0 0 0 3px rgba(29,161,87,.15); }
 .dot.err { background: #f5222d; }
@@ -243,6 +245,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <button onclick="setRange(0)" data-range="0">全部</button>
   <span class="spacer"></span>
   <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
+  <span class="token-age" id="tokenAge" style="display:none"></span>
   <button onclick="syncMore()" id="syncMoreBtn">📥 同步最新</button>
   <button onclick="syncFull()" id="fullSyncBtn">⏬ 全量同步</button>
   <button onclick="syncMedia()" id="mediaBtn" title="把库里引用到的图片与头像全部下载到 data/cache/，之后断网也能翻完整历史">🖼 补齐图片</button>
@@ -1258,6 +1261,7 @@ function connectWS() {
     }
     else if (d.type === "sync_progress") { onSyncProgress(d); }
     else if (d.type === "media_progress") { onMediaProgress(d); }
+    else if (d.type === "token") { updateTokenAge(d.data); }
     else if (d.type === "event") {
       const hint = document.getElementById("newMsgHint");
       // 群提示（进出场）：仅记录，不打断阅读
@@ -1350,6 +1354,7 @@ async function loadStatus() {
   }
   myUserId = String(d.my_user_id || "");
   updateImStatus({ im_state: d.im.state, im_detail: d.im.detail });
+  if (d.token) updateTokenAge(d.token);
   // 把后台自适应节奏显示在按钮 tooltip 上（IM 在线时故意拉得很长，不浪费请求）
   if (d.sync) {
     const btn = document.getElementById("syncMoreBtn");
@@ -1370,6 +1375,10 @@ async function loadStatus() {
   if (!d.has_token) warns.push('未配置 centraltoken（只能浏览本地已同步消息）');
   if (!d.im.state || d.im.state === "off") warns.push("实时消息未启用");
   if (d.im.state === "login_failed") warns.push("IM 凭证失效（userSig 过期）");
+  if (d.token && d.token.warn) {
+    warns.push(`centraltoken 已用 ${fmtDur(d.token.age_sec)}，`
+      + `已接近历史寿命（中位 ${fmtDur(d.token.lifetime_median)}），建议提前刷新`);
+  }
   if (warns.length) {
     banner.innerHTML = "⚠️ " + warns.join(" · ") +
       ' · <a onclick="openSettings()">去设置</a>';
@@ -1588,17 +1597,53 @@ async function showStats() {
   const syncRow = (s && s.sync)
     ? `<div><b>后台核对节奏</b>每 ${s.sync.interval || "-"} 秒（${s.sync.interval_reason || "-"}）</div>`
     : "";
+  const tk = s && s.token;
+  const tokRow = (tk && tk.set_at)
+    ? `<div><b>centraltoken</b>签发于 ${tk.set_at}（来源 ${tk.source || "?"}）</div>
+       <div><b>已用</b>${fmtDur(tk.age_sec)}${tk.samples ? ` · 预计还能 ${fmtDur(tk.eta_sec)}` : ""}</div>
+       <div><b>历史寿命</b>${tk.samples
+          ? `${tk.samples} 次过期实测：短 ${fmtDur(tk.lifetime_min)} / 中位 ${fmtDur(tk.lifetime_median)} / 长 ${fmtDur(tk.lifetime_max)}`
+          : `还没有过期样本——下次真过期会自动记下来，之后就能预判`}</div>`
+    : "";
   document.getElementById("statsKv").innerHTML = `
     <div><b>总消息</b>${d.total} 条</div>
     <div><b>老师消息</b>${d.teacher} 条</div>
     <div><b>图片</b>${d.images} 条</div>
     <div><b>发言用户</b>${d.users} 人</div>
-    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${syncRow}${mediaRow}`;
+    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${tokRow}${syncRow}${mediaRow}`;
   document.getElementById("statsTable").innerHTML = (d.days || [])
     .map(x => `<tr><td>${x.date || "-"}</td><td>${x.teacher}</td><td>${x.count}</td></tr>`).join("");
   document.getElementById("statsModal").style.display = "flex";
 }
 function closeStats() { document.getElementById("statsModal").style.display = "none"; }
+
+// ===================== centraltoken 寿命 =====================
+function fmtDur(sec) {
+  if (!sec) return "-";
+  const h = sec / 3600;
+  if (h < 1) return Math.round(sec / 60) + " 分钟";
+  if (h < 48) return h.toFixed(1) + " 小时";
+  return (h / 24).toFixed(1) + " 天";
+}
+function updateTokenAge(t) {
+  const el = document.getElementById("tokenAge");
+  if (!el) return;
+  if (!t || !t.set_at) { el.style.display = "none"; return; }
+  el.style.display = "";
+  el.textContent = `🕐 已用 ${fmtDur(t.age_sec)}` + (t.samples ? ` · 预计还能 ${fmtDur(t.eta_sec)}` : "");
+  el.className = "token-age" + (t.warn ? " warn" : "");
+  el.title = `centraltoken 签发于 ${t.set_at}`
+    + (t.source ? `（来源 ${t.source}）` : "")
+    + `\n已用 ${fmtDur(t.age_sec)}`
+    + (t.samples
+        ? `\n历史 ${t.samples} 次过期实测：短 ${fmtDur(t.lifetime_min)} / 中位 ${fmtDur(t.lifetime_median)} / 长 ${fmtDur(t.lifetime_max)}`
+          + `\n预计还能用 ${fmtDur(t.eta_sec)}`
+        : `\n还没有「过期」样本——等下一次真过期就会自动记下来，之后就能预测了`)
+    + (t.history && t.history.length
+        ? "\n\n最近：\n" + t.history.map(h =>
+            `  ${h.set_at} → ${h.lifetime ? fmtDur(h.lifetime) : "?"} ${h.reason === "expired" ? "（过期）" : "（被换掉）"}`).join("\n")
+        : "");
+}
 
 // ===================== 启动 =====================
 connectWS();
