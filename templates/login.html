@@ -91,6 +91,11 @@
       本页显示的当前值来源写在标签的 tooltip 上。
       <code>tools/capture_login.py</code> 抓到真实登录流量时会**自动把新的 sceneId 写回**，
       所以真变了你不用手改。<br>
+    · <b>Web 接入还缺一个 prefix</b>：实测 SDK 会把它拼进请求域名
+      （<code>https://&lt;prefix&gt;.captcha-open.aliyuncs.com</code>）当 <b>userTag</b> 校验，
+      乱写会得 <code>IllegalUserTag</code>。它是阿里云控制台配 Web 接入时生成的，
+      而约牛只配了小程序插件（插件声明里没有 prefix），所以**我们手上没有**。
+      默认不发 prefix；要试其它值就在地址后加 <code>?prefix=xxx</code>。<br>
     · 票据（<code>captchaVerifyParam</code>）<b>一次性且短时效</b>，所以重放无用——
       每次登录都得重新过一遍。<br>
     · 只想拿 token 的话更省事：用 <code>tools/capture_token.py</code> 抓现成的，不必走这条。
@@ -98,8 +103,18 @@
 </div>
 
 <script>
-// 阿里云 Web 接入要求**先**设这个全局，SDK 内部会读 t.AliyunCaptchaConfig.{region,prefix}
-window.AliyunCaptchaConfig = { region: "cn", prefix: "nl" };
+// 阿里云 Web 接入的 prefix 会被**拼进域名**并当 userTag 校验：
+//   实测 prefix="nl" → 请求 https://nl.captcha-open.aliyuncs.com/
+//                        → {"Code":"IllegalUserTag"} → init 失败
+// 也就是说 prefix 不是随便起的，它得是**阿里云控制台配 Web 接入时生成的**。
+// 而约牛的小程序插件声明里根本没有 prefix（他们没配 Web），所以我们拿不到。
+// 先试空的（SDK 默认 prefix = ""，可能落到不带子域的端点）；
+// 想试其它值就在地址后面加 ?prefix=xxx
+const _q = new URLSearchParams(location.search);
+const NL_PREFIX = _q.has("prefix") ? (_q.get("prefix") || "") : "";
+window.NL_PREFIX = NL_PREFIX;
+window.AliyunCaptchaConfig = NL_PREFIX ? { region: "cn", prefix: NL_PREFIX }
+                                     : { region: "cn" };
 
 // ===================== 诊断采集（必须在 SDK 之前装上） =====================
 // 组件起不来时，onError 往往只给一个 code、msg 是空的（实测如此），
@@ -315,9 +330,8 @@ whenSdkReady(function initCaptcha() {
   // 所以初始化失败会在你输入任何东西之前就报出来 —— 与账号密码无关。
   dline("SDK 就绪:", "开始 initAliyunCaptcha（sceneId=" + SCENE_ID + "）");
   try {
-    window.initAliyunCaptcha({
+    const cfg = {
       SceneId: SCENE_ID,
-      prefix: "nl",
       mode: "popup",
       element: "#captcha-box",
       button: "#submitBtn",
@@ -333,7 +347,11 @@ whenSdkReady(function initCaptcha() {
       onError: onCaptchaError,        // ← SDK 内部错误（INIT_FAIL 的 msg 在这里）
       // 万一 SDK 用 prefix 去找全局回调，这里也挂一份
       fail: e => onCaptchaError(e)
-    });
+    };
+    // prefix 留空就**不发送**（它就是阿里云的 userTag，拼进请求域名）
+    if (window.NL_PREFIX) cfg.prefix = window.NL_PREFIX;
+    dline("prefix:", window.NL_PREFIX ? window.NL_PREFIX : "（未发送）");
+    window.initAliyunCaptcha(cfg);
     window.nlCaptchaVerifyCallback = captchaVerifyCallback;
     window.nlOnBizResultCallback = onBizResultCallback;
     window.nlGetInstance = getInstance;
