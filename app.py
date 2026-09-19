@@ -540,9 +540,11 @@ def _msg_payload_from_dict(room_id: int, m: dict) -> dict:
 
 # ===================== 腾讯云 IM 常驻监听 =====================
 _im_state = {"state": "off", "detail": "", "identifier": "", "group": "",
-             "last_msg_time": "", "messages": 0}
+             "last_msg_time": "", "last_push_at": 0.0, "messages": 0}
 _im_reload = threading.Event()
 _im_status_lock = threading.Lock()
+# 「IM 重连成功」时用它把同步线程立刻叫醒（那一刻最需要补漏，见 _sync_worker）
+_sync_wake = threading.Event()
 
 
 def im_config() -> dict | None:
@@ -564,6 +566,7 @@ def _im_on_message(m: dict):
     room_id = int(c.get("room_id") or 0)
     with _im_status_lock:
         _im_state["last_msg_time"] = m.get("msg_date", "")
+        _im_state["last_push_at"] = time.time()
         _im_state["messages"] += 1
     ingest(room_id, [m], origin="im")
 
@@ -574,9 +577,14 @@ def _im_on_event(e: dict):
 
 def _im_on_status(state: str, detail: str):
     with _im_status_lock:
+        was = _im_state["state"]
         _im_state["state"] = state
         _im_state["detail"] = detail
     broadcast({"type": "status", "im_state": state, "im_detail": detail})
+    # 刚进入 online（首次连上 / 断线重连）→ 立即叫醒同步线程补一次：
+    # IM 客户端没实现离线补拉，断开窗口里的消息只能靠 REST 找回来。
+    if state == "online" and was != "online":
+        _sync_wake.set()
 
 
 async def _im_session(c: dict):
@@ -634,7 +642,8 @@ def reset_sync_backoff():
 # ===================== 历史同步 =====================
 _sync_state = {"running": False, "detail": "", "added": 0, "auth_failed": False,
               "next_try": 0.0, "mode": "", "pages": 0, "fetched": 0,
-              "oldest": "", "newest": "", "last_page_ms": 0, "done": False}
+              "oldest": "", "newest": "", "last_page_ms": 0, "done": False,
+              "interval": 0, "interval_reason": ""}
 
 # pageSize 实测无上限：1000 条 0.95s、500 条 0.78s。
 # 取不到时逐级降级，避免某个尺寸被服务端拒绝就卡死。
@@ -707,14 +716,19 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
 
         i += 1
         t0 = time.time()
+        fetched += len(items)
+        # 两个都记上：stop_at_known 分支会直接 break，后面那段 update 不会再跑到
+        _sync_state.update(pages=i, fetched=fetched)
+        # 消息按时间倒序回，id 也随之递减：第 1 页里一旦出现「库里已有」的 id，
+        # 说明已经追上（边界就在本页），更旧的页必然全是已有的 —— 不必再白跑一页。
+        # 以前写的是 i > 1，于是每轮固定浪费 1 个请求。真正的补空档交给「全量同步」。
         known = _known_ids(room_id, items)
-        if stop_at_known and not full and known and i > 1:
+        if stop_at_known and not full and known:
             added_total += ingest(room_id, [x for x in items
                                             if int(x.get("id") or 0) not in known], "rest")
-            _sync_state["detail"] = f"已追上（新增 {added_total} 条）"
+            _sync_state["detail"] = "已追上"
             break
         added_total += ingest(room_id, items, "rest")
-        fetched += len(items)
 
         oldest = (items[-1].get("msgDate") or "")[:10]
         newest = (items[0].get("msgDate") or "")[:10]
@@ -737,9 +751,14 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
             break
         time.sleep(SYNC_SLEEP)
 
-    _sync_state.update(auth_failed=False, running=False, done=True,
-                       detail=(_sync_state["detail"] if error else
-                               f"完成：{_sync_state['pages']} 页 {fetched} 条，新增 {added_total} 条"))
+    # 收尾：把「停在哪 / 跑了几次请求 / 新增多少」讲清楚。
+    # pages 必须用本地 i —— 以前读的是 _sync_state['pages']，而 stop_at_known
+    # 分支从来没更新过它，fetched 也在 break 之前没加，于是明明拉了 1 页
+    # 却显示「完成：0 页 0 条」，看上去像什么都没干。
+    head = _sync_state["detail"] or "完成"
+    _sync_state.update(auth_failed=False, running=False, done=True, pages=i,
+                       detail=(_sync_state["detail"] if error
+                               else f"{head} · {i} 次请求，新增 {added_total} 条"))
     _sync_progress()
     return {"added": added_total, "fetched": fetched, "pages": _sync_state["pages"],
             "oldest": _sync_state["oldest"]}
@@ -758,13 +777,42 @@ def _known_ids(room_id: int, items: list) -> set:
     return {int(r["id"]) for r in rows}
 
 
-def _sync_worker():
-    """后台增量同步：有 centraltoken 时定期拉最新消息。
+# ===================== 同步节奏（自适应） =====================
+# IM 是主通道（秒级），REST 只负责「补漏 + 校正」。间隔按 IM 健康度来定：
+SYNC_IV_IM_OK = 300         # IM online：5 分钟核对一次就够
+SYNC_IV_IM_UNSTABLE = 30    # IM 正在连 / 刚断：30 秒（很可能刚漏消息）
+SYNC_IV_NO_IM = 60          # 没配 IM 或凭证失效：REST 是唯一通道，1 分钟一次
 
+
+def _sync_interval() -> tuple[float, str]:
+    """按 IM 状态给出下次轮询间隔（秒）与原因（供 /api/status 显示）。"""
+    with _im_status_lock:
+        state = _im_state.get("state") or "off"
+    if state == "online":
+        return SYNC_IV_IM_OK, "IM 在线，定时核对"
+    if state in ("off", "login_failed"):
+        return SYNC_IV_NO_IM, "IM 不可用，REST 为主"
+    return SYNC_IV_IM_UNSTABLE, f"IM {state}，积极补漏"
+
+
+def _sync_worker():
+    """后台增量同步（**自适应节奏**）。
+
+    IM 推送是主通道（秒级），这里只做「补漏 + 校正」：
+      - IM 客户端没有实现离线补拉，断线/重启窗口里的消息只能靠 REST 找回来
+      - IM 推送的 privateMessageFlag/vipUser/auditStatus 是审核前占位值，REST 才权威
+    间隔按 IM 健康度自适应（见 _sync_interval），IM 正常时不浪费请求；
+    IM 刚重连成功会被 _sync_wake 立刻叫醒补一次。
     登录失效后 10 分钟内不再重试（避免无意义的错误日志），用户更新 token 后立即恢复。
     """
     while True:
-        time.sleep(45)
+        iv, why = _sync_interval()
+        _sync_state["interval"] = int(iv)
+        _sync_state["interval_reason"] = why
+        woken = _sync_wake.wait(iv)          # 等到点，或被「IM 重连」提前叫醒
+        _sync_wake.clear()
+        if woken:
+            _sync_state["interval_reason"] = "IM 重连，立刻补漏"
         c = cfg()
         if not c.get("centraltoken") or not c.get("room_id"):
             continue
@@ -774,7 +822,7 @@ def _sync_worker():
             continue
         _sync_state["running"] = True
         try:
-            r = sync_history(pages=2)
+            r = sync_history(pages=2)        # 追上就停在第 1 页，见 sync_history 的 stop_at_known
             if r.get("added"):
                 broadcast({"type": "synced", "added": r["added"]})
         except Exception as e:

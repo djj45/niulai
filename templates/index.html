@@ -243,7 +243,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <button onclick="setRange(0)" data-range="0">全部</button>
   <span class="spacer"></span>
   <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
-  <button onclick="syncMore()">📥 同步最新</button>
+  <button onclick="syncMore()" id="syncMoreBtn">📥 同步最新</button>
   <button onclick="syncFull()" id="fullSyncBtn">⏬ 全量同步</button>
   <button onclick="syncMedia()" id="mediaBtn" title="把库里引用到的图片与头像全部下载到 data/cache/，之后断网也能翻完整历史">🖼 补齐图片</button>
   <button onclick="openSettings()">⚙️ 鉴权/设置</button>
@@ -1307,6 +1307,13 @@ async function loadStatus() {
   }
   myUserId = String(d.my_user_id || "");
   updateImStatus({ im_state: d.im.state, im_detail: d.im.detail });
+  // 把后台自适应节奏显示在按钮 tooltip 上（IM 在线时故意拉得很长，不浪费请求）
+  if (d.sync) {
+    const btn = document.getElementById("syncMoreBtn");
+    const iv = d.sync.interval || 0;
+    if (btn) btn.title = "手动立刻拉一次最新消息。\n"
+      + `后台自动核对：每 ${iv ? iv + " 秒" : "-"}（${d.sync.interval_reason || "-"}）`;
+  }
   // 同步进度（刷新页面时如果后台还在跑，也能接上）
   if (d.sync && d.sync.running) onSyncProgress(d.sync);
   else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
@@ -1533,12 +1540,17 @@ async function showStats() {
        <div><b>媒体占用</b>${mb} MB（${m.dir || "data/cache"}）</div>
        <div><b>离线可用</b>${m.missing ? `还差 ${m.missing} 个` : "✅ 已完整，可断网查看"}</div>`
     : "";
+  let s = null;
+  try { s = await (await fetch("/api/status")).json(); } catch (e) { /* 拿不到就少一行，不影响统计 */ }
+  const syncRow = (s && s.sync)
+    ? `<div><b>后台核对节奏</b>每 ${s.sync.interval || "-"} 秒（${s.sync.interval_reason || "-"}）</div>`
+    : "";
   document.getElementById("statsKv").innerHTML = `
     <div><b>总消息</b>${d.total} 条</div>
     <div><b>老师消息</b>${d.teacher} 条</div>
     <div><b>图片</b>${d.images} 条</div>
     <div><b>发言用户</b>${d.users} 人</div>
-    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${mediaRow}`;
+    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${syncRow}${mediaRow}`;
   document.getElementById("statsTable").innerHTML = (d.days || [])
     .map(x => `<tr><td>${x.date || "-"}</td><td>${x.teacher}</td><td>${x.count}</td></tr>`).join("");
   document.getElementById("statsModal").style.display = "flex";
