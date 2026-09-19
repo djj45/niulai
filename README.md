@@ -200,7 +200,7 @@ Python 侧复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`（已与 cryp
 `captchaVerifyParam` 的确切形状（实测 280 字符，**`Base64(JSON)`**）：
 
 ```json
-{"certifyId":"T7CxI9I4gu","sceneId":"f374igpl","isSign":true,"securityToken":"<128 字符>"}
+{"certifyId":"T0AbC1D2Ef","sceneId":"f374igpl","isSign":true,"securityToken":"<128 字符>"}
 ```
 
 形状由插件的 `verifyType` 决定（见 `plugin.dec.wxapkg`），约牛传了 `success` 回调
