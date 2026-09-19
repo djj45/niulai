@@ -185,7 +185,7 @@ cp .env.example .env    # 填 NIULAI_CENTRALTOKEN / NIULAI_IM_USER_SIG …
 | **只看今天 / 看某天** | 默认就落在**最新消息**（不再从头播）；顶部进度条下面有日期选择器，可选任意一天**时间正序通读**全天 |
 | **滚动加载更早** | 一天 3000+ 条，首屏只载最新的 1200 条；滚到列表顶部会**自动接更早的 1000 条**，且保持当前阅读位置不跳 |
 | **图片/头像本地化** | 点「🖼 补齐图片」把库里引用到的**全部图片与头像**下载到 `data/cache/`，之后**断网也能翻完整历史**。启动时会自动补齐（可用 `MEDIA_AUTOFETCH=0` 关掉），按钮上随时显示还差几张 |
-| **数据概览 / 备份** | 各天消息数与老师消息分类统计，并显示媒体本地化进度；备份分两种：`💾 备份` 存 SQLite，`🗄 备份图片目录`（在统计弹窗里）把 `data/cache/` 打包成 tar.gz |
+| **数据概览 / 备份** | 各天消息数与老师消息分类统计，并显示媒体本地化进度；`💾 备份` 存 SQLite 到 `data/backups/` |
 
 ### 状态提示
 
@@ -209,9 +209,19 @@ data/cache/avatars/   199 张  ─ 同上
 - 实测：662 个目标（图片 463 + 头像去重后 199）、共 **267 MB**、4 并发、约 4 分钟下完，0 失败。
 - 命中本地后 `/api/media` 直接读磁盘（实测 814KB 的图 13ms），**根本不发网络请求**。
 
-> 媒体目录 **不在** `💾 备份` 的范围内（那个只拷 SQLite）。要单独存一份就点
-> 「📊 统计」→「🗄 备份图片目录」，会生成 `data/backups/niulai_media_<时间>.tar.gz`（约 240 MB）。
-> 图片理论上可以从 CDN 重下，但它们属于服务端资源、可能被清理，想长期留存就备份。
+> 媒体目录 **不在** `💾 备份` 的范围内（那个只拷 SQLite）。图片理论上能从 CDN 重下，
+> 但它们属于服务端资源、可能被清理，想长期留存就自己把 `data/cache/` 拷走。
+
+### 贴底只做一次
+
+“贴到底部”只应该在**刚打开 / 切换日期（或范围）**时执行一次；之后你自由浏览，
+不要再有任何自动滚动。另外**两栏的滚动位置完全独立**：你翻左栏时右栏来新消息，
+不应该把左栏也拉下去。规则：
+
+- 加载 → `renderMessages(..., followBottom=true)` → 两栏各贴底**一次**。
+- 实时新消息 / 图片撑开 → 只调 `followList(那一栏)`，而且只在该栏本来就贴着底部时才动。
+- `scrollToBottom()`（同时滚两栏）**只给用户主动动作**：回到底部按钮、新消息提示条。
+- 你已滚上去时，后台同步完成不重载视图，只累加「N 条新消息」提示。
 
 ---
 
@@ -335,7 +345,9 @@ niulai/
 | **msgType=2 = 内参卡片** | 老师发的付费内参文章（盘前「早盘预案」+ 盘后「知识点小结」）。载荷 `{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`，`checkCode` 是房间级固定校验码 |
 | **内参卡片打不开（约牛自己也不行）** | 小程序的卡片点击处理只认 `msgContent.url / .link / .href`，而卡片里叫 `sourceUrl` → 落在 else 分支上弹 toast **「内参详情接入中」**。另：`product.zx093.com/yngp/yngp_app/article/queryArticleDetail.htm?articleId=<sourceId>` 无需鉴权可调，但**不是同一个 ID 空间**（拿 10064 查到的是 2023 年另一位老师的文章且正文为空）。所以前端只做展示卡片 |
 | **`contain-intrinsic-size` 的坑** | `.msg` 用了 `content-visibility:auto` + `contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换 → `scrollHeight` 反复变 → 滚动条抽搐。改成先写 `0 64px` 再写 `auto 64px`（不支持 `auto` 的浏览器自动回退） |
-| **自动贴底只能一处触发** | 以前 `onImgLoad()` 一律调 `scrollToBottom()`（**同时滚左右两栏**），于是你在左栏往上翻时，头像/图片陆续加载完就把两栏又拽到底。现在每栏各自维护 `_follow`，图片只滚动它自己所在的那一栏，且只在那一栏处于“跟随底部”时才滚 |
+| **自动贴底必须“分栏”且“只一次”** | `onRealtimeMessage` 里写着 `if (stickToBottom) scrollToBottom(true)` —— 而 `stickToBottom` **只跟踪右栏**、`scrollToBottom()` **同时滚两栏**。于是你在左栏翻历史时，右栏每来一条实时消息就把左栏也拽回底部（IM 是活的 → “隔一会儿自动贴底”）。现在自动跟随一律走 `followList(那一栏)`；`scrollToBottom()` 只给用户主动动作 |
+| **分批渲染结束后的贴底要听 `followBottom`** | `_renderBatch` 渲染完无条件 `pinToBottom(allList)`：`st.followBottom` 算了却没用，把你已滚上去的状态又改回“跟随”；而且写死 `allList`，左栏分批完从不贴底。现在只在 `followBottom` 为真时贴，且两栏一致 |
+| **快捷定位要两栏一起跳** | `jumpTo()` 原来只对 `allList` 里的节点调 `scrollIntoView`，左栏纹丝不动；而且基准日用了 `toISOString()`（UTC，比本地早 8 小时会错一天），那段“同一天优先”永远不命中。现在两栏都跳，基准日取本地日期，目标时间直接算成 ts（不再对每条节点 `allMessages.find` 一次，那是 O(n²)） |
 | **媒体缓存必须“以库为准”才行** | `_prefetch_queue` 是内存队列 + `PREFETCH_LIMIT=400`，只在同步时触发、重启就丢 → 图片只补到 107/463、头像 133/410。改成从数据库扫出全部引用（`media_targets()`）+ 单飞幂等补齐后，一次跑完 662/662 |
 | **`media_status()` 不能连实时状态一起缓存** | 它算计数要遍历 662 个目标（慢，所以要缓存 30s），但把 `running/finished/task_*` 一起缓存后，**新任务启动后 30s 内会返回上一次的 `finished=True`**，UI 会显示错状态（我自己就被这个骗过一次，以为任务没跑）。现在只缓存计数，实时字段每次现取 |
 | **`loadToday()` 是同步函数** | 启动代码写的 `loadToday().then(loadStatus)` 会直接抛 `TypeError: reading 'then'`，把紧跟其后的 `loadMediaStatus()` 和 `setInterval` 全带崩（“补齐图片”按钮永远是初始文案就这个原因）。现在 `loadToday` 返回 Promise，且链尾挂 `.catch().finally()` |
@@ -375,12 +387,18 @@ A：已修。两个原因叠在一起：① API 对 `order=desc` 已返回时间
 现在左右栏都是时间正序、贴底即最新（实测：首条 08:11 早盘预案，末条 15:25 最新回复）。
 
 **Q：老师栏往上翻时滚动条抽搐、停一会又自动贴底？**
-A：已修。以前 `onImgLoad()` 一律调 `scrollToBottom()`，而那是**同时滚左右两栏**的，
-所以你在左栏翻历史时，头像/图片陆续加载完就把两栏又拽到底。
-现在每栏各自维护 `_follow` 状态：图片只滚动**它自己所在的那一栏**，且仅当那一栏本就在
-“跟随底部”时才滚；右栏翻历史时也不会被打断。“贴到底部”只在加载/切天时执行一次。
-滚动条抽搐另有一个原因：`.msg` 的 `content-visibility:auto` 配合固定的
-`contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换导致 `scrollHeight` 反复变，
+A：有两个来源，都修了。
+
+① **自动贴底**：`onImgLoad()` 和 `onRealtimeMessage()` 以前都调 `scrollToBottom()`，
+而那是**同时滚左右两栏**的。所以你翻左栏时，右栏每来一条实时消息（IM 是活的）
+就把两栏又拽到底 —— 图像加载完也会触发一次。
+现在自动跟随一律走 `followList(那一栏)`：只动「本来就贴着底部」的那一栏。
+`scrollToBottom()` 只保留给用户主动动作（回到底部按钮、新消息提示条）。
+另外你已滚上去时，后台同步完成不再重载当前视图，只累加「N 条新消息」提示。
+“贴到底部”只在**加载/切天/切范围**时执行一次。
+
+② **滚动条抽搐**：`.msg` 的 `content-visibility:auto` 配合固定的
+`contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换导致 `scrollHeight` 反复变。
 现改为 `auto 64px`（现代浏览器会记住真实高度，旧的自动回退到固定值）。
 
 **Q：老师栏里 `{"brief":"早盘预案",...}` 是什么？是文件吗？**

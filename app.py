@@ -1220,31 +1220,15 @@ async def api_media_sync():
 # ===================== 备份 =====================
 @app.route("/api/backup", methods=["POST"])
 async def api_backup():
-    """备份。body: {media: true} 则把 data/cache/ 整个打包（DB 备份不含图片）。"""
+    """备份 SQLite（图片目录 data/cache/ 不在备份范围内）。"""
     import shutil
-    import tarfile
-
-    data = await request.get_json(force=True, silent=True) or {}
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    if data.get("media"):
-        name = f"niulai_media_{ts}.tar.gz"
-        path = os.path.join(BACKUP_DIR, name)
-        try:
-            def _tar():
-                with tarfile.open(path, "w:gz") as tf:
-                    tf.add(CACHE_DIR, arcname="cache")
-            # 267MB 压缩要好几秒，丢线程池，否则事件循环被卡住
-            await asyncio.to_thread(_tar)
-            return jsonify({"status": "ok", "file": name, "kind": "media",
-                            "size": os.path.getsize(path)})
-        except Exception as e:                              # noqa: BLE001
-            return jsonify({"error": str(e)}), 500
     path = os.path.join(BACKUP_DIR, f"niulai_{ts}.db")
     try:
         with _db_lock:
             conn.commit()
         shutil.copy2(DB_PATH, path)
-        return jsonify({"status": "ok", "file": os.path.basename(path), "kind": "db",
+        return jsonify({"status": "ok", "file": os.path.basename(path),
                         "size": os.path.getsize(path)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

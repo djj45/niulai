@@ -380,7 +380,6 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       <tbody id="statsTable"></tbody>
     </table>
     <div class="actions">
-      <button onclick="backupMedia()">🗄 备份图片目录</button>
       <button class="primary" onclick="closeStats()">关闭</button>
     </div>
   </div>
@@ -646,11 +645,15 @@ function _renderBatch(key) {
   st.index = end;
   loadNickCounts();
   if (st.index >= msgs.length) {
-    // 全部渲染完：把最后一批也贴到底，并收回状态（否则滚动加载更早会一直不触发）
+    // 全部渲染完：收回状态（否则滚动加载更早会一直不触发）。
+    // 贴底只在「本次渲染本来就要贴底」时做一次——以前这里无条件 pinToBottom(allList)：
+    //  ① st.followBottom 算了却没用，你已滚上去后又被重新打开“跟随”，于是又自己贴底；
+    //  ② 写死 allList，左栏分批渲染完从不贴底，两栏行为还不一致。
+    const wantPin = st.followBottom;
     st.followBottom = false;
     if (st.observer) { st.observer.disconnect(); st.observer = null; }
     _renderStates.delete(key);
-    if (list.id === "allList") pinToBottom(list);
+    if (wantPin) pinToBottom(list);
     return;
   }
   const sentinel = document.createElement("div");
@@ -964,7 +967,8 @@ async function setRange(days) {
 // ===================== 定位 / 滚动 =====================
 function listScrollTop() { return document.getElementById("allList").scrollTop; }
 function scrollToBottom(instant) {
-  // 用户主动点「回到底部」/新消息提示时才同时贴两栏
+  // **只给用户主动动作（「回到底部」按钮 / 新消息提示）用**：同时贴两栏。
+  // 自动跟随一律走 followList()，一次只动一栏。
   const al = document.getElementById("allList");
   const tl = document.getElementById("teacherList");
   al.scrollTop = al.scrollHeight;
@@ -976,28 +980,36 @@ function scrollToBottom(instant) {
   document.getElementById("newMsgHint").style.display = "none";
 }
 function jumpTo(hhmm) {
-  const list = document.getElementById("allList");
-  const nodes = Array.from(list.querySelectorAll(".msg"));
-  if (!nodes.length) return;
-  // 以列表中最新的那天为定位基准（默认看当天节奏）
-  const ts = allMessages.map(x => x.ts || 0);
-  const maxTs = Math.max(...ts, 0);
-  const baseDate = new Date(maxTs * 1000).toISOString().slice(0, 10);
-  let fallback = null;
-  for (const el of nodes) {
-    const m = allMessages.find(x => msgKey(x) === el.dataset.mid);
-    if (!m || !m.msg_date) continue;
-    const t = m.msg_date.slice(11, 16);
-    if (m.msg_date.slice(0, 10) === baseDate && t >= hhmm) {
+  // 以当前列表里最新一条所在的那天为基准（默认看当天节奏）。
+  // 以前用 toISOString() 取日期是 UTC，比本地早 8 小时会错一天，
+  // 导致“同一天优先”那段永远不命中，只能靠 fallback 碰运气。
+  const latest = allMessages.length ? allMessages[allMessages.length - 1] : null;
+  const baseDate = (latest && latest.msg_date)
+    ? latest.msg_date.slice(0, 10)
+    : (currentDay || todayStr());
+  const target = Math.floor(new Date(baseDate + "T" + hhmm + ":00").getTime() / 1000);
+  if (!isFinite(target)) return;
+  // 两栏都要跳：以前只对 allList 里的节点调 scrollIntoView，左栏纹丝不动
+  const a = jumpColumnToTs(document.getElementById("allList"), target);
+  const b = jumpColumnToTs(document.getElementById("teacherList"), target);
+  if (!a && !b) return;
+}
+
+/** 把某一栏定位到「ts >= target 的第一条」；都比它早就回到顶部。返回是否命中。 */
+function jumpColumnToTs(list, target) {
+  if (!list) return false;
+  for (const el of list.querySelectorAll(".msg[data-ts]")) {
+    if (Number(el.dataset.ts || 0) >= target) {
+      _follow[list.id] = false;      // 定位 = 主动离开底部，别让自动跟随又拽回去
       el.scrollIntoView({ block: "start" });
       el.classList.add("is-new");
       setTimeout(() => el.classList.remove("is-new"), 1800);
-      return;
+      return true;
     }
-    if (!fallback && t >= hhmm) fallback = el;
   }
-  if (fallback) { fallback.scrollIntoView({ block: "start" }); return; }
+  _follow[list.id] = false;
   list.scrollTop = 0;
+  return false;
 }
 function jumpToMessage(mid) {
   if (!mid) return;
@@ -1010,10 +1022,15 @@ function jumpToMessage(mid) {
   setTimeout(() => el.classList.remove("is-new"), 1800);
 }
 function onImgLoad(el) {
-  // 只滚动「图片所在的那一栏」，而且只在该栏处于跟随底部时才滚。
-  // 以前一律调 scrollToBottom()（同时滚左右两栏）→ 你在左栏往上翻时，
-  // 头像/图片陆续加载完就把两栏又拽到底，看着就是“停一会儿自动贴底 + 滚动条抽搐”。
-  const list = el && el.closest ? el.closest(".msg-list") : null;
+  // 图片撑开只影响它自己所在的那一栏
+  followList(el && el.closest ? el.closest(".msg-list") : null);
+}
+
+/** 自动跟随：**只动这一栏**，且只在这一栏本来就贴着底部时才动。
+ *  反面教材（踩过两次）：用 stickToBottom（它只跟右栏）去驱动
+ *  scrollToBottom()（它同时滚两栏）—— 你在左栏翻历史时，右栏每来一条
+ *  实时消息就把左栏也拽回底部，表现就是“老师那栏隔一会儿自动贴底”。 */
+function followList(list) {
   if (!list || !_follow[list.id] || _pinning[list.id]) return;
   list.scrollTop = list.scrollHeight;
 }
@@ -1074,8 +1091,10 @@ async function sendMsg() {
     box.value = "";
     autoGrow(box);
     if (pendingImage) { clearImage(); }
+    // 刚发出去的是自己那条（只出现在右栏）——只把右栏拉到底，别动左栏
     stickToBottom = true;
-    setTimeout(() => scrollToBottom(true), 400);
+    _follow.allList = true;
+    setTimeout(() => followList(document.getElementById("allList")), 400);
   } catch (e) {
     alert("发送失败：" + e);
   } finally {
@@ -1214,18 +1233,22 @@ function onRealtimeMessage(m) {
   if (!key || seenKeys.has(key)) return;
   if (m.id && allMessages.some(x => x.id === m.id)) return;
   seenKeys.add(key);
-  allMessages.push(m);
-  allMessages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
   const isTeacherSide = m.user_type === 4;
-  if (isTeacherSide) teacherMessages.push(m);
 
-  // 搜索结果模式下不往结果列表里混入实时消息，只提示
-  if (searchMode) {
+  // 只在「当前视图确实包含这条消息」时才插进列表。
+  // 正在通读历史某天（或看搜索结果）时插进去，列表内容会在你眼皮底下变长、
+  // 滚动位置跟着漂，看起来就是“它又自己动了”——那种情况只累计新消息提示。
+  const viewingLive = !searchMode && (!currentDay || currentDay === todayStr());
+  if (!viewingLive) {
     pendingNew++;
     document.getElementById("newMsgCount").textContent = pendingNew;
     document.getElementById("newMsgHint").style.display = "block";
     return;
   }
+
+  allMessages.push(m);
+  allMessages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  if (isTeacherSide) teacherMessages.push(m);
 
   const list = document.getElementById("allList");
   if (_renderStates.has(list.id)) {          // 分批渲染未结束时直接改数据源
@@ -1247,8 +1270,11 @@ function onRealtimeMessage(m) {
   }
   document.getElementById("allCount").textContent = "全部 " + allMessages.length + " 条";
   loadNickCounts();
-  if (stickToBottom) scrollToBottom(true);
-  else {
+  // 自动跟随只动「本来就贴底」的那一栏，另一栏保持用户的位置；
+  // 以前这里是 if (stickToBottom) scrollToBottom(true) → 两栏一起被拽到底。
+  followList(list);
+  if (isTeacherSide) followList(document.getElementById("teacherList"));
+  if (!_follow.allList) {
     pendingNew++;
     const hint = document.getElementById("newMsgHint");
     document.getElementById("newMsgCount").textContent = pendingNew;
@@ -1417,7 +1443,14 @@ function onSyncProgress(p) {
     document.getElementById("syncText").textContent = p.detail || "同步完成";
     document.getElementById("syncFill").style.width = "100%";
     setTimeout(hideSyncBar, 4000);
-    loadMessages();
+    // 你已经滚上去在翻历史时不要重载当前视图 —— 重载会重新渲染并按「切换视图」
+    // 的规则贴到底，看起来就是“过一会儿又自己跳到底了”。新消息本来就会由 IM 推过来。
+    if (_follow.allList) loadMessages();
+    else {
+      pendingNew++;
+      document.getElementById("newMsgCount").textContent = pendingNew;
+      document.getElementById("newMsgHint").style.display = "block";
+    }
     return;
   }
   showSyncBar();
@@ -1487,19 +1520,6 @@ function onMediaProgress(p) {
     `${p.detail || "下载媒体中"} · ${((p.bytes || 0) / 1048576).toFixed(1)} MB`;
   document.getElementById("syncFill").style.width =
     (total ? Math.min(100, Math.round(cur / total * 100)) : 2) + "%";
-}
-
-async function backupMedia() {
-  if (!confirm("把 data/cache/ 下的图片与头像打包成 tar.gz 放到 data/backups/。\n"
-    + "约 267MB，压缩要几秒，确认继续？")) return;
-  document.getElementById("syncText").textContent = "正在打包图片目录…";
-  showSyncBar();
-  const r = await fetch("/api/backup", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ media: true }) });
-  const d = await r.json();
-  hideSyncBar();
-  alert(d.error ? "备份失败：" + d.error
-    : `已备份 → data/backups/${d.file}（${(d.size / 1048576).toFixed(1)} MB）`);
 }
 
 async function showStats() {
