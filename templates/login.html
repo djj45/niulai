@@ -72,8 +72,11 @@
   <div class="card hint">
     <b>说明</b><br>
     · 账号密码只在本机加密后直接发给 <code>account.zx093.cn</code>，不经过任何第三方；不会落盘。<br>
-    · 滑块是阿里云验证码，<b>sceneId</b> 取自小程序源码。若你的账号/网络让阿里云判定为低风险，
-      可能不弹挑战直接通过。<br>
+    · 滑块是阿里云验证码，**sceneId** 取自小程序源码里的常量
+      （构建期写死，运行时不会变；但约牛发新版本换场景时会变）。
+      本页显示的当前值来源写在标签的 tooltip 上。
+      <code>tools/capture_login.py</code> 抓到真实登录流量时会**自动把新的 sceneId 写回**，
+      所以真变了你不用手改。<br>
     · 票据（<code>captchaVerifyParam</code>）<b>一次性且短时效</b>，所以重放无用——
       每次登录都得重新过一遍。<br>
     · 只想拿 token 的话更省事：用 <code>tools/capture_token.py</code> 抓现成的，不必走这条。
@@ -83,6 +86,7 @@
 <script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
 <script>
 const SCENE_ID = "{{ scene_id }}";
+const SCENE_FROM = "{{ scene_from }}";
 let captchaInstance = null;
 let busy = false;
 
@@ -92,7 +96,10 @@ function say(text, cls) {
   el.textContent = text || "";
   el.className = "msg" + (cls ? " " + cls : "");
 }
-$("sceneTag").textContent = "sceneId=" + SCENE_ID;
+$("sceneTag").textContent = "sceneId=" + SCENE_ID + (SCENE_FROM ? `（页面显示）` : "");
+if (SCENE_FROM) {
+  $("sceneTag").title = "当前值来源：" + SCENE_FROM;
+}
 
 /** 真正干活：拿票据 + 账密去登录 */
 async function doLogin(param) {

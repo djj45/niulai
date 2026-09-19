@@ -210,6 +210,18 @@ Python 侧复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`（已与 cryp
 **逐字节对比 6/6 一致**，而且拿抓到的真实密文解出账号正确、重算 `sign` 也与抓到的
 逐字节相同）。
 
+**`sceneId` 是构建期常量，不会运行时变。** 它就是小程序 config 模块里的一个字面量，
+与环境域名写在一起（线上 `f374igpl` / 测试 `c613ekby`）。扫全部 `.js`：**没有任何一处
+是从网络响应赋值的**。所以只在约牛发新版本、换场景时会变。
+
+它同时出现在**登录请求体**和**票据内部** → 抓包会立刻暴露变化。本工具已把它做成
+可配置项，`tools/capture_login.py` 抓到真实流量时会**自动写回新值**（不用手改）：
+
+```bash
+tools/proxy_capture.sh on    # 换成 capture_login.py：NIULAI_ADDON=tools/capture_login.py
+# 抓到后会打印：🔄 sceneId 变了！已同步：f374igpl → <新值>
+```
+
 `captchaVerifyParam` 的确切形状（实测 280 字符，**`Base64(JSON)`**）：
 
 ```json

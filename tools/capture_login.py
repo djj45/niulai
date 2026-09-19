@@ -33,6 +33,7 @@ import json
 import os
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -58,6 +59,36 @@ def _post_json(path: str, payload: dict, timeout: int = 30):
                                  headers={"content-type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, context=_ssl_ctx, timeout=timeout) as r:
         return json.loads(r.read().decode())
+
+
+def _get_json(path: str, timeout: int = 15):
+    with urllib.request.urlopen(API + path, context=_ssl_ctx, timeout=timeout) as r:
+        return json.loads(r.read().decode())
+
+
+def _sync_scene_id(scene: str):
+    """sceneId 与本地不一致就写回去。
+
+    它是小程序**构建期写死的常量**（线上 f374igpl / 测试 c613ekby），运行时不变，
+    但约牛发新版本换场景时会变 —— 所以让它由真实流量驱动，永远不用手改。
+    """
+    if not scene:
+        return
+    try:
+        cur = (_get_json("/api/status").get("captcha_scene_id") or "").strip()
+    except Exception:                                       # noqa: BLE001
+        return
+    if cur == scene:
+        print(f"  🔎 sceneId 与本地一致：{scene}")
+        return
+    try:
+        _post_json("/api/settings", {
+            "captcha_scene_id": scene,
+            "captcha_scene_from": "抓包同步 " + time.strftime("%Y-%m-%d %H:%M")})
+        print(f"  🔄 sceneId 变了！已同步：{cur or '(未设)'} → {scene}")
+        print("     （约牛可能发了新版本 / 换了阿里云场景，/login 页面会自动用新值）")
+    except Exception as e:                                  # noqa: BLE001
+        print(f"  ⚠️  sceneId 同步失败：{e}")
 
 
 def _show_param_shape(param: str):
@@ -166,6 +197,7 @@ def _handle_login(flow: http.HTTPFlow):
     print(f"  URL : {flow.request.pretty_url}")
     print(f"  字段: {', '.join(sorted(fields))}")
     print()
+    _sync_scene_id(fields.get("sceneId", ""))
     _show_param_shape(fields.get("captchaVerifyParam", ""))
     print()
     verdict = _verify(fields)
@@ -182,7 +214,6 @@ def _handle_login(flow: http.HTTPFlow):
 
 def _grab_response(flow: http.HTTPFlow):
     """等响应回来，看 status 和 data（data 就是 centraltoken）。"""
-    import time
     for _ in range(60):
         if flow.response is not None:
             break

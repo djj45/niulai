@@ -326,8 +326,32 @@ r = "1.0" === _Config.verifyType ? n
 
 ### 其它已核实细节
 
+- **sceneId 是构建期常量，不是运行时动态值**。它是 config 模块里的字面量，与环境域名写在同一块：
+
+  ```js
+  // 线上环境
+  exports.stat = x = "https://stat.zx093.cn", exports.statLog = c = "https://stat-log.zx093.com",
+  exports.WS_URL = n = "wss://product.zx093.com", exports.sceneId = r = "f374igpl",
+  exports.errReportEvent = U = "err_report"
+
+  // 测试环境（各自一个独立场景，不是同一个场景在变）
+  exports.stat = x = "https://stat-test.zx093.cn", exports.WS_URL = n = "wss://product-test.zx093.com",
+  exports.sceneId = r = "c613ekby", exports.errReportEvent = U = "test_err_report"
+  ```
+
+  扫全部 `.js` 里的 `sceneId`：**没有任何一处是从网络响应赋值的** —— 要么是
+  `exports.sceneId = r = "..."`（定义），要么是 `i.sceneId` / `k._Config.SceneId`（读取）。
+  所以运行期不变，**只在约牛发新版本、换场景时变**（版本级，不是动态）。
+
+- **双重自证**：`sceneId` 会出现在**登录请求体**里（`sceneId: this.data.sceneId`），
+  也会出现在**票据里**（Base64 解开后有 `sceneId`）。实测抓包两者都是 `f374igpl`，
+  与源码常量一致 → 到 2026-09-19 为止它没变；万一日后变了，抓包会立刻暴露。
+
+- 本工具把它做成了可配置项（`captcha_scene_id` 设置 > `api.CAPTCHA_SCENE_ID` 常量），
+  `tools/capture_login.py` 抓到真实登录流量时会**自动写回新值**，不需要手改。
+
 - 请求层：`if (!ignoreToken) { f[tokenName] = wx.getStorageSync("token") }`，而登录成功
-do `wx.setStorageSync("token", resp.data)` → 两者是同一个键，故 **resp.data 即 centraltoken**。
+  会 `wx.setStorageSync("token", resp.data)` → 两者是同一个键，故 **resp.data 即 centraltoken**。
 - `getSign` 只 `delete channel`，**不过滤空值**（`loginVersion=""`/`deviceId=""` 要参与签名）；
 返回**小写** MD5，由调用方 `upperCase()`。
 - 约牛后端收到 ticket 后会**服务端到服务端**再调阿里云核验（抓包看不到）。

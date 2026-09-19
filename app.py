@@ -98,7 +98,7 @@ async def _broadcast_loop():
 # ===================== 配置 =====================
 CFG_KEYS = ("centraltoken", "teacher_id", "room_id", "im_sdk_app_id", "im_identifier",
             "im_user_sig", "im_group_id", "im_enabled", "my_user_id", "my_nick_name",
-            "my_avatar", "token_saved_at")
+            "my_avatar", "token_saved_at", "captcha_scene_id", "captcha_scene_from")
 
 
 def cfg() -> dict:
@@ -114,7 +114,19 @@ ENV_SEED = {
     "im_identifier": "NIULAI_IM_IDENTIFIER",
     "im_user_sig": "NIULAI_IM_USER_SIG",
     "im_group_id": "NIULAI_IM_GROUP_ID",
+    "captcha_scene_id": "NIULAI_CAPTCHA_SCENE_ID",
 }
+
+
+def captcha_scene_id() -> str:
+    """当前使用的阿里云验证码 sceneId。
+
+    优先级：设置里的值（可由抓包自动同步）> 源码常量。
+    它是**构建期写死在小程序里的常量**（线上 f374igpl / 测试 c613ekby），
+    运行时不会变，但约牛发新版本换场景时会变 —— 所以做成可覆盖的，
+    并由 tools/capture_login.py 抓到真实登录流量时自动写回。
+    """
+    return (cfg().get("captcha_scene_id") or "").strip() or api.CAPTCHA_SCENE_ID
 
 
 def seed_from_env():
@@ -851,6 +863,8 @@ async def api_status():
     return jsonify({
         "has_token": bool(c.get("centraltoken")),
         "token_saved_at": c.get("token_saved_at", ""),
+        "captcha_scene_id": captcha_scene_id(),
+        "captcha_scene_from": c.get("captcha_scene_from", ""),
         "teacher_id": c.get("teacher_id", ""),
         "room_id": c.get("room_id", ""),
         "my_user_id": c.get("my_user_id", ""),
@@ -870,7 +884,8 @@ async def api_settings():
     im_user_sig / im_group_id / im_enabled。"""
     data = await request.get_json(force=True) or {}
     allowed = {"centraltoken", "teacher_id", "room_id", "im_sdk_app_id", "im_identifier",
-               "im_user_sig", "im_group_id", "im_enabled", "my_user_id", "my_nick_name"}
+               "im_user_sig", "im_group_id", "im_enabled", "my_user_id", "my_nick_name",
+               "captcha_scene_id", "captcha_scene_from"}
     changed_im = False
     with _db_lock:
         for k, v in data.items():
@@ -972,7 +987,7 @@ async def api_login_password():
     account = (data.get("account") or "").strip()
     password = data.get("password") or ""
     param = (data.get("captcha_verify_param") or "").strip()
-    scene = (data.get("scene_id") or api.CAPTCHA_SCENE_ID).strip()
+    scene = (data.get("scene_id") or captcha_scene_id()).strip()
     if not account or not password:
         return jsonify({"error": "账号和密码都要填"}), 400
     if not param:
@@ -1025,7 +1040,10 @@ async def api_login_verify_sample():
 @app.route("/login")
 async def login_page():
     """账号密码登录页：本地页面 + 阿里云验证码 Web SDK，过滑块后自动登录。"""
-    return await render_template("login.html", scene_id=api.CAPTCHA_SCENE_ID)
+    c = cfg()
+    scene = captcha_scene_id()
+    src = c.get("captcha_scene_from") or ""
+    return await render_template("login.html", scene_id=scene, scene_from=src)
 
 
 @app.route("/api/probe-im", methods=["POST"])
