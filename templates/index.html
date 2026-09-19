@@ -245,6 +245,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
   <button onclick="syncMore()">📥 同步最新</button>
   <button onclick="syncFull()" id="fullSyncBtn">⏬ 全量同步</button>
+  <button onclick="syncMedia()" id="mediaBtn" title="把库里引用到的图片与头像全部下载到 data/cache/，之后断网也能翻完整历史">🖼 补齐图片</button>
   <button onclick="openSettings()">⚙️ 鉴权/设置</button>
   <button onclick="backupDB()">💾 备份</button>
   <button onclick="showStats()">📊 统计</button>
@@ -378,7 +379,10 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       <thead><tr><th>日期</th><th>老师</th><th>全部</th></tr></thead>
       <tbody id="statsTable"></tbody>
     </table>
-    <div class="actions"><button class="primary" onclick="closeStats()">关闭</button></div>
+    <div class="actions">
+      <button onclick="backupMedia()">🗄 备份图片目录</button>
+      <button class="primary" onclick="closeStats()">关闭</button>
+    </div>
   </div>
 </div>
 
@@ -815,7 +819,7 @@ function shiftDay(delta) {
   loadDay(v);
 }
 
-function loadToday() { loadDay(todayStr()); }
+function loadToday() { return loadDay(todayStr()); }
 
 async function loadTeacherColumn() {
   const extra = { size: 800, order: "desc", type: "teacher" };
@@ -1191,6 +1195,7 @@ function connectWS() {
                             detail: `完成：${d.pages || 0} 次请求 ${d.fetched || 0} 条，新增 ${d.added || 0} 条` });
     }
     else if (d.type === "sync_progress") { onSyncProgress(d); }
+    else if (d.type === "media_progress") { onMediaProgress(d); }
     else if (d.type === "event") {
       const hint = document.getElementById("newMsgHint");
       // 群提示（进出场）：仅记录，不打断阅读
@@ -1431,15 +1436,89 @@ async function backupDB() {
     : `已备份 → data/backups/${d.file}（${(d.size / 1024 / 1024).toFixed(2)} MB）`);
 }
 
+// ===================== 媒体补齐（纯离线查看） =====================
+/** 按钮文案就是本地化进度：还差 N 张 / 补齐中 / 已可离线 */
+function setMediaBtn(m) {
+  const btn = document.getElementById("mediaBtn");
+  if (!btn) return;
+  if (m.running) {
+    btn.textContent = `🖼 补齐中 ${m.task_current || 0}/${m.task_total || 0}`;
+    btn.disabled = true;
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = m.missing ? `🖼 补齐图片 (${m.missing})` : "🖼 图片已离线";
+  btn.title = `图片 ${m.images}/${m.images_total} · 头像 ${m.avatars}/${m.avatars_total}`
+    + ` · 占用 ${((m.bytes || 0) / 1048576).toFixed(1)} MB\n${m.dir || "data/cache"}`
+    + (m.missing ? "\n\n断网前建议补齐：点一下开始下载全部图片与头像" : "\n\n已全部本地化，可断网翻完整历史");
+}
+
+async function loadMediaStatus() {
+  try {
+    const d = await (await fetch("/api/media/status")).json();
+    setMediaBtn(d);
+    return d;
+  } catch (e) { return null; }
+}
+
+async function syncMedia() {
+  const d = await loadMediaStatus();
+  if (d && !d.missing && !d.running) { alert("媒体已全部本地化，可断网查看。"); return; }
+  const r = await fetch("/api/media/sync", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: "{}" });
+  const j = await r.json();
+  if (j.error) alert(j.error);
+}
+
+/** 媒体下载进度（由 WebSocket 的 media_progress 驱动） */
+function onMediaProgress(p) {
+  setMediaBtn(p);
+  if (!p.running && p.finished) {
+    const txt = `${p.detail || "媒体补齐完成"} · 共 ${((p.bytes || 0) / 1048576).toFixed(1)} MB`;
+    document.getElementById("syncText").textContent = txt;
+    document.getElementById("syncFill").style.width = "100%";
+    setTimeout(hideSyncBar, 5000);
+    loadMediaStatus();
+    return;
+  }
+  showSyncBar();
+  const total = p.task_total || 0, cur = p.task_current || 0;
+  document.getElementById("syncText").textContent =
+    `${p.detail || "下载媒体中"} · ${((p.bytes || 0) / 1048576).toFixed(1)} MB`;
+  document.getElementById("syncFill").style.width =
+    (total ? Math.min(100, Math.round(cur / total * 100)) : 2) + "%";
+}
+
+async function backupMedia() {
+  if (!confirm("把 data/cache/ 下的图片与头像打包成 tar.gz 放到 data/backups/。\n"
+    + "约 267MB，压缩要几秒，确认继续？")) return;
+  document.getElementById("syncText").textContent = "正在打包图片目录…";
+  showSyncBar();
+  const r = await fetch("/api/backup", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ media: true }) });
+  const d = await r.json();
+  hideSyncBar();
+  alert(d.error ? "备份失败：" + d.error
+    : `已备份 → data/backups/${d.file}（${(d.size / 1048576).toFixed(1)} MB）`);
+}
+
 async function showStats() {
   const r = await fetch("/api/stats");
   const d = await r.json();
+  const m = await loadMediaStatus() || {};
+  const mb = ((m.bytes || 0) / 1048576).toFixed(1);
+  const mediaRow = m.total
+    ? `<div><b>图片本地化</b>${m.images} / ${m.images_total}</div>
+       <div><b>头像本地化</b>${m.avatars} / ${m.avatars_total}</div>
+       <div><b>媒体占用</b>${mb} MB（${m.dir || "data/cache"}）</div>
+       <div><b>离线可用</b>${m.missing ? `还差 ${m.missing} 个` : "✅ 已完整，可断网查看"}</div>`
+    : "";
   document.getElementById("statsKv").innerHTML = `
     <div><b>总消息</b>${d.total} 条</div>
     <div><b>老师消息</b>${d.teacher} 条</div>
     <div><b>图片</b>${d.images} 条</div>
     <div><b>发言用户</b>${d.users} 人</div>
-    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>`;
+    <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${mediaRow}`;
   document.getElementById("statsTable").innerHTML = (d.days || [])
     .map(x => `<tr><td>${x.date || "-"}</td><td>${x.teacher}</td><td>${x.count}</td></tr>`).join("");
   document.getElementById("statsModal").style.display = "flex";
@@ -1448,8 +1527,11 @@ function closeStats() { document.getElementById("statsModal").style.display = "n
 
 // ===================== 启动 =====================
 connectWS();
-loadToday().then(loadStatus);   // 默认落在「今天」的日历视图，且停在当天最新处
-setInterval(async () => { const d = await loadStatus(); }, 30000);
+// loadToday 以前是同步函数（返回 undefined），这里链式 .then 会直接抛 TypeError，
+// 把后面的 loadMediaStatus / setInterval 全部带崩。现在让它返回 Promise，并各自抛不误。
+loadToday().catch(e => console.warn("加载今日失败：", e)).finally(loadStatus);
+loadMediaStatus();               // 与消息加载无关，单独发起
+setInterval(() => { loadStatus(); }, 30000);
 </script>
 </body>
 </html>

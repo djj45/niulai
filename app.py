@@ -21,6 +21,7 @@ import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 from quart import Quart, abort, jsonify, render_template, request, send_file, websocket
@@ -209,6 +210,234 @@ def _prefetch_worker():
             cache_media(item[0], item[1])
         except Exception:
             pass
+
+
+# ===================== 媒体本地化（纯离线查看） =====================
+# 上面那套 prefetch 只能处理「同步/新消息时顺手抓一批」，队列在内存里、上限 400，
+# 重启就丢 → 图片只补到 107/463、头像 133/410。
+# 这里补一套「以数据库为准」的全量补齐：扫出库里引用到的所有图片与头像，
+# 把还缺的下载到 data/cache/ 下，可重复执行（已下载的跳过）。
+# 补完之后断网也能翻完整历史，体量约 300~500MB。
+MEDIA_AUTOFETCH = os.environ.get("MEDIA_AUTOFETCH", "1").lower() not in ("0", "false", "no")
+MEDIA_WORKERS = 4                 # 并发下载数（CDN 友好且比串行快很多）
+MEDIA_AUTOFETCH_DELAY = 20        # 启动后等首屏加载完再开始补齐
+
+_media_state = {
+    "running": False, "finished": False, "task_total": 0, "task_current": 0,
+    "ok": 0, "fail": 0, "bytes": 0, "detail": "",
+    "started_at": 0.0, "finished_at": 0.0,
+}
+_media_lock = threading.RLock()
+_media_status_cache = {"at": 0.0, "data": None}
+MEDIA_STATUS_TTL = 30             # /api/status 会被轮询，算一次就缓存 30 秒
+
+
+def _norm_media_url(u: str) -> str:
+    """与 cache_media 的归一化保持一致（否则 key 对不上就会重复下载）。"""
+    if not u or not isinstance(u, str):
+        return ""
+    u = u.strip()
+    if u.startswith("http://") or u.startswith("https://"):
+        return u
+    if u.startswith("/"):
+        return api.media_url(u)
+    return ""
+
+
+def _host_allowed(url: str) -> bool:
+    host = url.split("/")[2] if "//" in url else ""
+    return any(host == h or host.endswith("." + h) for h in MEDIA_HOSTS)
+
+
+def media_targets() -> list:
+    """库里引用到的全部远端媒体（消息图片 + 用户头像），已去重、已过滤白名单。"""
+    out, seen = [], set()
+
+    def add(u, kind: str):
+        n = _norm_media_url(u)
+        if not n or n in seen or not _host_allowed(n):
+            return
+        seen.add(n)
+        out.append({"url": n, "kind": kind})
+
+    with _db_lock:
+        rows = conn.execute(
+            "SELECT msg_type, msg_content FROM messages WHERE msg_type IN (1, 2)"
+        ).fetchall()
+        avatars = [r[0] for r in conn.execute(
+            "SELECT DISTINCT avatar_url FROM users "
+            "WHERE avatar_url IS NOT NULL AND avatar_url != ''")]
+    for mt, content in rows:
+        try:
+            obj = json.loads(content or "{}")
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if int(mt or 0) == 1:
+            add(obj.get("imgUrl"), "image")
+        elif int(mt or 0) == 2:
+            add(obj.get("mainImageUrl"), "image")   # 内参卡片封面（样本里为 null）
+    for a in avatars:
+        add(a, "avatar")
+    return out
+
+
+def media_local_name(url: str, kind: str) -> str:
+    """已落盘则返回本地文件名，否则空串。"""
+    key = f"{kind}:{url}"
+    with _db_lock:
+        local = db.media_local(conn, key)
+    if local and os.path.exists(os.path.join(_media_dir(kind), local)):
+        return local
+    return ""
+
+
+def _dir_size(path: str) -> int:
+    n = 0
+    try:
+        with os.scandir(path) as it:
+            for e in it:
+                if e.is_file():
+                    n += e.stat().st_size
+    except OSError:
+        pass
+    return n
+
+
+def media_status(refresh: bool = False) -> dict:
+    """本地化进度：还差几张、已占多少磁盘。
+
+    只缓存「数据库统计」那部分（算一次要遍历 662 个目标 + os.stat）；
+    任务实时状态必须每次从 _media_state 现取，否则新任务启动后 30 秒内
+    会返回上一次的 finished=True，UI 会显示错状态。
+    """
+    now = time.time()
+    cached = _media_status_cache["data"]
+    if refresh or not cached or now - _media_status_cache["at"] >= MEDIA_STATUS_TTL:
+        cached = _media_status_counts()
+        _media_status_cache.update(at=now, data=dict(cached))
+    data = dict(cached)
+    with _media_lock:
+        data.update({k: _media_state[k] for k in
+                     ("running", "finished", "ok", "fail", "task_total",
+                      "task_current", "detail")})
+    return data
+
+
+def _media_status_counts() -> dict:
+    """扫库计算本地化计数与磁盘占用（较慢，结果会被缓存）。"""
+    targets = media_targets()
+    # 一次查出所有索引，再逐个确认文件还在（662 次单条 SELECT 太浪费）
+    with _db_lock:
+        rows = conn.execute("SELECT key, local, kind FROM media").fetchall()
+    have = set()
+    for k, local, kind in rows:
+        if local and os.path.exists(os.path.join(_media_dir(kind or "image"), local)):
+            have.add(k)
+    counts = {"image": [0, 0], "avatar": [0, 0]}      # [已缓存, 总数]
+    for t in targets:
+        counts[t["kind"]][1] += 1
+        if f"{t['kind']}:{t['url']}" in have:
+            counts[t["kind"]][0] += 1
+    cached, total = counts["image"][0] + counts["avatar"][0], len(targets)
+    return {
+        "images": counts["image"][0], "images_total": counts["image"][1],
+        "avatars": counts["avatar"][0], "avatars_total": counts["avatar"][1],
+        "cached": cached, "total": total, "missing": total - cached,
+        "bytes": _dir_size(IMAGE_DIR) + _dir_size(AVATAR_DIR),
+        "dir": os.path.relpath(CACHE_DIR, BASE_DIR),
+    }
+
+
+def _media_progress():
+    with _media_lock:
+        snap = {k: _media_state[k] for k in
+                ("running", "finished", "task_total", "task_current",
+                 "ok", "fail", "bytes", "detail")}
+    broadcast({"type": "media_progress", **snap})
+
+
+def media_sync(limit: int = 0) -> dict:
+    """把还未本地化的媒体全部下载到本地。幂等，可反复执行。"""
+    with _media_lock:
+        if _media_state["running"]:
+            return {"error": "已有一个媒体补齐任务在跑"}
+        _media_state.update(running=True, finished=False, ok=0, fail=0, bytes=0,
+                            task_current=0, task_total=0, detail="扫描待下载媒体…",
+                            started_at=time.time(), finished_at=0.0)
+        _media_status_cache["data"] = None          # 计数可能已变，别拿旧的
+    _media_progress()
+    try:
+        pend = [t for t in media_targets() if not media_local_name(t["url"], t["kind"])]
+        if limit > 0:
+            pend = pend[:limit]
+        total = len(pend)
+        with _media_lock:
+            _media_state.update(task_total=total, detail=f"待下载 {total} 个")
+        _media_progress()
+        if not total:
+            with _media_lock:
+                _media_state.update(running=False, finished=True, detail="媒体已全部本地化",
+                                    finished_at=time.time())
+            _media_progress()
+            return dict(_media_state)
+        done = ok = fail = nbytes = 0
+        last_push = 0.0
+        with ThreadPoolExecutor(max_workers=MEDIA_WORKERS) as ex:
+            futs = {ex.submit(cache_media, t["url"], t["kind"]): t for t in pend}
+            for fut in as_completed(futs):
+                t = futs[fut]
+                done += 1
+                try:
+                    name = fut.result() or ""
+                except Exception:                       # noqa: BLE001
+                    name = ""
+                if name:
+                    ok += 1
+                    try:
+                        nbytes += os.path.getsize(os.path.join(_media_dir(t["kind"]), name))
+                    except OSError:
+                        pass
+                else:
+                    fail += 1
+                with _media_lock:
+                    _media_state.update(task_current=done, ok=ok, fail=fail, bytes=nbytes,
+                                        detail=f"下载中 {done}/{total}（失败 {fail}）")
+                now = time.time()
+                if now - last_push > 0.8 or done == total:
+                    last_push = now
+                    _media_progress()
+        detail = f"完成：成功 {ok}，失败 {fail}，共 {total} 个"
+        with _media_lock:
+            _media_state.update(running=False, finished=True, detail=detail,
+                                finished_at=time.time())
+        _media_status_cache["data"] = None            # 让下次查询重新统计
+        _media_progress()
+        print(f"[媒体] {detail}，缓存目录 {os.path.relpath(CACHE_DIR, BASE_DIR)}")
+        return dict(_media_state)
+    except Exception as e:                              # noqa: BLE001
+        with _media_lock:
+            _media_state.update(running=False, finished=True, detail=f"异常：{e}")
+        _media_progress()
+        print(f"[媒体] 补齐异常：{e}")
+        return dict(_media_state)
+
+
+def _media_autofetch():
+    """启动后自动补齐（想让首屏先加载完再跑）。可用 MEDIA_AUTOFETCH=0 关掉。"""
+    time.sleep(MEDIA_AUTOFETCH_DELAY)
+    try:
+        st = media_status(refresh=True)
+        if st["missing"]:
+            print(f"[媒体] 自动补齐启动：待下载 {st['missing']} 个"
+                  f"（图片 {st['images_total'] - st['images']}、头像 {st['avatars_total'] - st['avatars']}）")
+            media_sync()
+        else:
+            print(f"[媒体] 本地已完整：{st['cached']}/{st['total']} 个"
+                  f"，{st['bytes'] / 1048576:.1f} MB，可离线查看")
+    except Exception as e:                              # noqa: BLE001
+        print(f"[媒体] 自动补齐异常：{e}")
 
 
 # ===================== 消息入库 =====================
@@ -580,6 +809,7 @@ async def api_status():
         "my_nick_name": c.get("my_nick_name", ""),
         "im": ims,
         "sync": dict(_sync_state),
+        "media": media_status(),
         "stats": {"total": st["total"], "teacher": st["teacher"], "images": st["images"],
                   "users": st["users"], "first": st["first"], "last": st["last"]},
         "rooms": rooms,
@@ -946,7 +1176,9 @@ async def api_media():
         kind = "image"
     if not url:
         abort(404)
-    name = cache_media(url, kind)
+    # cache_media 是同步的（内部 requests 下载，最长 30s 超时）——
+    # 直接在 async 处理函数里调会把事件循环卡住，整站跟着卡。丢线程池里跑。
+    name = await asyncio.to_thread(cache_media, url, kind)
     if not name:
         abort(404)
     resp = await send_file(os.path.join(_media_dir(kind), name))
@@ -964,17 +1196,55 @@ async def api_media_local(kind: str, name: str):
     return resp
 
 
+@app.route("/api/media/status")
+async def api_media_status():
+    """媒体本地化进度：还差几张才能纯离线看历史。"""
+    return jsonify(await asyncio.to_thread(media_status))
+
+
+@app.route("/api/media/sync", methods=["POST"])
+async def api_media_sync():
+    """补齐媒体：把库里引用到的图片与头像全部下载到 data/cache/。
+
+    body: {limit: 0}   limit>0 时只补前 N 个（调试用）
+    """
+    data = await request.get_json(force=True, silent=True) or {}
+    limit = max(0, int(data.get("limit") or 0))
+    if _media_state["running"]:
+        return jsonify({"error": "已有一个媒体补齐任务在跑",
+                        "state": dict(_media_state)}), 409
+    threading.Thread(target=media_sync, kwargs={"limit": limit}, daemon=True).start()
+    return jsonify({"status": "started", "limit": limit})
+
+
 # ===================== 备份 =====================
 @app.route("/api/backup", methods=["POST"])
 async def api_backup():
+    """备份。body: {media: true} 则把 data/cache/ 整个打包（DB 备份不含图片）。"""
     import shutil
+    import tarfile
+
+    data = await request.get_json(force=True, silent=True) or {}
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if data.get("media"):
+        name = f"niulai_media_{ts}.tar.gz"
+        path = os.path.join(BACKUP_DIR, name)
+        try:
+            def _tar():
+                with tarfile.open(path, "w:gz") as tf:
+                    tf.add(CACHE_DIR, arcname="cache")
+            # 267MB 压缩要好几秒，丢线程池，否则事件循环被卡住
+            await asyncio.to_thread(_tar)
+            return jsonify({"status": "ok", "file": name, "kind": "media",
+                            "size": os.path.getsize(path)})
+        except Exception as e:                              # noqa: BLE001
+            return jsonify({"error": str(e)}), 500
     path = os.path.join(BACKUP_DIR, f"niulai_{ts}.db")
     try:
         with _db_lock:
             conn.commit()
         shutil.copy2(DB_PATH, path)
-        return jsonify({"status": "ok", "file": os.path.basename(path),
+        return jsonify({"status": "ok", "file": os.path.basename(path), "kind": "db",
                         "size": os.path.getsize(path)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1015,6 +1285,8 @@ async def startup():
     threading.Thread(target=_prefetch_worker, daemon=True).start()
     threading.Thread(target=_im_supervisor, daemon=True).start()
     threading.Thread(target=_sync_worker, daemon=True).start()
+    if MEDIA_AUTOFETCH:
+        threading.Thread(target=_media_autofetch, daemon=True).start()
     c = cfg()
     print("=" * 56)
     print("约牛聊天室 Web 服务")

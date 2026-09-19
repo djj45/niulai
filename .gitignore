@@ -6,3 +6,4 @@ data/
 cert.pem
 key.pem
 _ref/
+.DS_Store
