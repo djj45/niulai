@@ -172,16 +172,32 @@ mitmdump -q -nr ~/.zcode/workspace/default/data/capture/flows_xxx.mitm -s tools/
 uv run python tools/import_seed.py
 ```
 
-### ④ 账号密码登录（过滑块，不用抓包）
+### ④ 账号密码登录 —— **已验证走不通**（记录一下为什么）
 
-只要你能在浏览器里过一下阿里云滑块，就不用抓包了：
+链路本身完全可复现（见下），但**拿不到 `captchaVerifyParam`**，所以跑不起来：
 
-1. 打开 <https://127.0.0.1:5002/login>（设置弹窗里也有入口）
-2. 填账号密码 → 点登录 → 过滑块
-3. 后端自动完成 `accountPwdVerifyLogin.htm`，拿到的 `data` 就是 **centraltoken**，
-   并自动带出房间信息 / IM 凭证（复用 `/api/probe`）
+- 账密登录必须带 `captchaVerifyParam`，而它只能由阿里客户端组件产生
+- 小程序插件好用（我们没能力在微信里跑它），但换成浏览器 Web SDK 就差一个 **prefix**
+- 实测 prefix 会被**拼进请求域名当 `userTag` 校验**（不是官方文档说的“自定义前缀避冲突”）：
 
-链路（源码逆向 + 已交叉验证）：
+  | prefix | 实际请求主机 | 阿里云答复 |
+  |---|---|---|
+  | `"nl"`（编的） | `nl.captcha-open.aliyuncs.com` | `IllegalUserTag` |
+  | 不发送 | `undefined.captcha-open.aliyuncs.com` | `IllegalUserTag` |
+
+  不带 prefix 时 SDK 把 `undefined` 直接拼进域名 → **这个 SDK 里 prefix 是强制的**。
+- 正确的 prefix 是**约牛在阿里云控制台配 Web 接入时生成的**。但：
+  小程序插件声明 `"plugins":{"AliyunCaptcha":{version,provider}}` 里**没有 prefix**；
+  `www.zx0093.com` / `ht.zx0093.com` / `app.zx093.cn` / `www.zx093.com` / `account.zx093.cn`
+  **全都没有任何验证码痕迹** → 他们只配了小程序接入，这个值**不存在**（不是藏起来了）
+- 而且两边票据形状不同：插件给 `Base64({certifyId,sceneId,isSign,securityToken})`，
+  Web SDK 给 `{sceneId,certifyId,deviceToken,failover}`
+
+> 所以想用账密登录，只有约牛自己在他们阿里云账号里建一个 Web 接入场景才行，
+> 我们无法绕过。**该用 `tools/proxy_capture.sh` 抓现成 token。**
+> `/login` 页面保留着，当备用入口（手里已有票据时可用）+ 逆向记录。
+
+下面是这条链路的完整细节（已用真实抓包验证过，代码在 `niulai_api.login_by_password`）。
 
 ```
 POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm

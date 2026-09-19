@@ -341,8 +341,10 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       <label>centraltoken</label>
       <textarea id="setToken" placeholder="三段逗号分隔的长串（SXQd...…）"></textarea>
       <div class="hint" style="margin-top:6px">
-        不想抓包？用账号密码登录也行：
-        <a href="/login" target="_blank">打开登录页（过滑块 → 自动写入 centraltoken）→</a>
+        抓 token 不用手敲那一堆代理命令：<code>tools/proxy_capture.sh on</code> → 重开小程序窗口进聊天室 →
+        <code>tools/proxy_capture.sh off</code>。
+        （<a href="/login" target="_blank">账号密码登录</a>已实测走不通——缺阿里云 Web 接入的
+        prefix，页面上有完整结论）
       </div>
     </div>
     <div class="field">

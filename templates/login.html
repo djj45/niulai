@@ -46,16 +46,64 @@
           line-height:1.6; white-space:pre-wrap; word-break:break-all; }
   .diag.show { display:block; }
   button.tiny { padding:2px 10px; font-size:11px; }
+  .verdict { border-left:4px solid var(--err); background:#fff5f5; border-radius:6px;
+             padding:14px 16px; margin-bottom:16px; }
+  .verdict h2 { font-size:15px; margin:0 0 8px; color:var(--err); }
+  .verdict p { margin:0 0 8px; font-size:13px; }
+  .verdict table { border-collapse:collapse; font-size:12px; margin:10px 0; }
+  .verdict th, .verdict td { border:1px solid var(--border); padding:5px 10px; text-align:left; }
+  .verdict th { background:#fafafa; color:var(--muted); font-weight:400; }
+  .verdict code { background:#f0f2f5; }
+  .next { background:#f0f7ff; border-left:4px solid var(--accent); border-radius:6px;
+          padding:12px 16px; font-size:13px; margin-bottom:16px; }
+  .next pre { background:#1f2329; color:#d6dde8; padding:10px; border-radius:5px;
+              font-size:12px; overflow:auto; margin:8px 0 0; }
+  details.fold { margin-bottom:16px; }
+  details.fold > summary { cursor:pointer; font-size:13px; color:var(--muted);
+                           padding:8px 0; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>账号密码登录</h1>
-  <div class="sub">
-    走小程序同一条链路：<code>accountPwdVerifyLogin.htm</code>。
-    账密用小程序里硬编码的 DES 密钥本地加密，过一次滑块拿到 <code>captchaVerifyParam</code>，
-    登录成功返回值就是 <b>centraltoken</b>，会自动写入并刷新 IM 凭证。
+  <h1>账号密码登录（<span style="color:var(--err)">已验证走不通</span>）</h1>
+  <div class="sub">保留本页仅作逆向记录与“手里已有票据”时的备用入口。</div>
+
+  <div class="verdict">
+    <h2>⛔ 这条路已实测放弃，不是配置问题，是值不存在</h2>
+    <p>
+      账密登录必须带 <code>captchaVerifyParam</code>（阿里云验证码票据），而它只能由
+      阿里客户端组件产生。小程序插件好用，但想换成浏览器 Web SDK 就差一个
+      <b>prefix</b> —— 实测它会被拼进请求域名当 <b>userTag</b> 校验：
+    </p>
+    <table>
+      <tr><th>prefix</th><th>实际请求主机</th><th>阿里云答复</th></tr>
+      <tr><td><code>"nl"</code>（编的）</td><td><code>nl.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
+      <tr><td>不发送</td><td><code>undefined.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
+    </table>
+    <p>
+      不带 prefix 时 SDK 直接把 <code>undefined</code> 拼进域名 → 这个 SDK 里 prefix 是**强制**的。
+      而正确的 prefix 是**约牛在阿里云控制台配 Web 接入时生成**的：
+      他们的小程序插件声明里没有 prefix，5 个网页站也查不到任何验证码痕迹
+      → 他们压根没配过 Web 接入，这个值不存在（不是藏起来了）。<br>
+      另外小程序插件的票据是 <code>Base64({certifyId,sceneId,isSign,securityToken})</code>，
+      而 Web SDK 给的是 <code>{sceneId,certifyId,deviceToken,failover}</code>，形状也对不上。
+    </p>
   </div>
+
+  <div class="next">
+    <b>真正该用的：一条命令抓现成 token</b>（已实测可用，不用记 networksetup）
+    <pre>tools/proxy_capture.sh on
+# 小程序窗口彻底关掉重开 → 进任意老师聊天室 → 终端出现 ✅
+tools/proxy_capture.sh off</pre>
+  </div>
+
+  <details class="fold">
+    <summary>▸ 仍想手动试？下面保留完整链路（只在你已从别处拿到 captchaVerifyParam 时才有用）</summary>
+    <br>
+    <div class="sub">
+      账密用小程序里硬编码的 DES 密钥本地加密，登录一次直接拿到 <b>centraltoken</b>，
+      并自动刷 IM 凭证。
+    </div>
 
   <div class="card">
     <div class="field">
@@ -82,6 +130,7 @@
     </div>
     <pre class="diag" id="diag"></pre>
   </div>
+  </details>
 
   <div class="card hint">
     <b>说明</b><br>

@@ -320,9 +320,20 @@ r = "1.0" === _Config.verifyType ? n
 
 约牛传了 `success` 回调（页面里的 `codeSuccess`）→ 故为 **verifyType 3.0 / isSign 形态**。
 
-> ⚠️ **验证码 Web SDK 的票据形状不同**（实测其 `captchaVerifyCallback` 收到的是
-> `JSON{sceneId, certifyId, deviceToken, failover}`，没有 `isSign`/`securityToken`）。
-> 所以想用浏览器 Web SDK 代替小程序插件过滑块，**票据对不上、会被服务端核验拒**。
+> ⚠️ **验证码 Web SDK 走不通（已实测堵死）**。 实测 SDK 会把 `prefix` **拼进请求域名当
+> userTag 校验**（不是官方文档说的“自定义前缀避全局名冲突”）：
+>
+> | prefix | 实际请求主机 | 阿里云答复 |
+> |---|---|---|
+> | `"nl"`（编的） | `nl.captcha-open.aliyuncs.com` | `IllegalUserTag` |
+> | 不发送 | `undefined.captcha-open.aliyuncs.com` | `IllegalUserTag` |
+>
+> 不发送时 SDK 直接拼 `undefined` 进域名 → 这个 SDK 里 prefix 是**强制**的。
+> 而正确的 prefix 是**配 Web 接入时生成的**：小程序插件声明里没有 prefix，
+> 5 个网页站也无任何验证码痕迹 → 他们没配过 Web 接入，**这个值不存在**。
+> 另外两边票据形状也不同（插件 `Base64({certifyId,sceneId,isSign,securityToken})`
+> vs Web `{sceneId,certifyId,deviceToken,failover}`）。所以账密登录走浏览器这条路
+> **只有约牛自己建 Web 接入场景才能通**，客户端这边无法绕过。
 
 ### 其它已核实细节
 
