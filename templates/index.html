@@ -81,7 +81,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   content-visibility: auto;
   /* contain-intrinsic-size 先给固定估算（旧浏览器兼容），
      再给 auto 版本（现代浏览器会记住真实高度）；
-     不这样做的话滚动时估算值被真实高度替换，scrollHeight 反复变 → 滚动条抽搯 */
+     不这样做的话滚动时估算值被真实高度替换，scrollHeight 反复变 → 滚动条抽搐 */
   contain-intrinsic-size: 0 64px;
   contain-intrinsic-size: auto 64px; }
 .msg:hover { background: var(--hover); }
@@ -1008,7 +1008,7 @@ function jumpToMessage(mid) {
 function onImgLoad(el) {
   // 只滚动「图片所在的那一栏」，而且只在该栏处于跟随底部时才滚。
   // 以前一律调 scrollToBottom()（同时滚左右两栏）→ 你在左栏往上翻时，
-  // 头像/图片陆续加载完就把两栏又拽到底，看着就是“停一会儿自动贴底 + 滚动条抽搯”。
+  // 头像/图片陆续加载完就把两栏又拽到底，看着就是“停一会儿自动贴底 + 滚动条抽搐”。
   const list = el && el.closest ? el.closest(".msg-list") : null;
   if (!list || !_follow[list.id] || _pinning[list.id]) return;
   list.scrollTop = list.scrollHeight;

@@ -312,7 +312,7 @@ niulai/
 | **消息类型（实测修正）** | `msgType`：`0`=文本、`1`=图片、**`2`=文章推送卡片** —— 即老师发的「早盘预案 / 知识点小结」付费文章，**不是语音**。载荷 JSON：`{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`；`sourceId` = 文章 ID（等于 `sourceUrl` 里的 `articleId`）；`sourceUrl` 是小程序内 H5 路径，实测浏览器打不开 |
 | **msgType=2 = 内参卡片** | 老师发的付费内参文章（盘前「早盘预案」+ 盘后「知识点小结」）。载荷 `{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`，`checkCode` 是房间级固定校验码 |
 | **内参卡片打不开（约牛自己也不行）** | 小程序的卡片点击处理只认 `msgContent.url / .link / .href`，而卡片里叫 `sourceUrl` → 落在 else 分支上弹 toast **「内参详情接入中」**。另：`product.zx093.com/yngp/yngp_app/article/queryArticleDetail.htm?articleId=<sourceId>` 无需鉴权可调，但**不是同一个 ID 空间**（拿 10064 查到的是 2023 年另一位老师的文章且正文为空）。所以前端只做展示卡片 |
-| **`contain-intrinsic-size` 的坑** | `.msg` 用了 `content-visibility:auto` + `contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换 → `scrollHeight` 反复变 → 滚动条抽搯。改成先写 `0 64px` 再写 `auto 64px`（不支持 `auto` 的浏览器自动回退） |
+| **`contain-intrinsic-size` 的坑** | `.msg` 用了 `content-visibility:auto` + `contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换 → `scrollHeight` 反复变 → 滚动条抽搐。改成先写 `0 64px` 再写 `auto 64px`（不支持 `auto` 的浏览器自动回退） |
 | **自动贴底只能一处触发** | 以前 `onImgLoad()` 一律调 `scrollToBottom()`（**同时滚左右两栏**），于是你在左栏往上翻时，头像/图片陆续加载完就把两栏又拽到底。现在每栏各自维护 `_follow`，图片只滚动它自己所在的那一栏，且只在那一栏处于“跟随底部”时才滚 |
 | 真正的「老师回复某人」 | 信号是 `user_type=4 且 toUserId>0`（实测 396 条），不是 `privateMessageFlag`（恒为 0）。引用快照在 `quoteContent` 里，其 `id` 才是引用目标（`/api/messages` 的 `type=reply` 就是这个筛选） |
 | **API 排序约定** | `/api/messages?order=desc` 服务端会**把结果反转为时间正序**再返回（前端好直接 append + 贴底），调用方**不要再 reverse**。踩过：左栏老师栏多反了一次 → 变新→旧，贴底后底部是早上 08:11 的文章卡片，最新那条反而被顶到看不见的顶部 |
@@ -348,12 +348,12 @@ A：已修。两个原因叠在一起：① API 对 `order=desc` 已返回时间
 变成新→旧，所以贴底后看到的“最后一条”实际上是当天最早的；② 最新那条被顶到了看不见的顶部。
 现在左右栏都是时间正序、贴底即最新（实测：首条 08:11 早盘预案，末条 15:25 最新回复）。
 
-**Q：老师栏往上翻时滚动条抽搯、停一会又自动贴底？**
+**Q：老师栏往上翻时滚动条抽搐、停一会又自动贴底？**
 A：已修。以前 `onImgLoad()` 一律调 `scrollToBottom()`，而那是**同时滚左右两栏**的，
 所以你在左栏翻历史时，头像/图片陆续加载完就把两栏又拽到底。
 现在每栏各自维护 `_follow` 状态：图片只滚动**它自己所在的那一栏**，且仅当那一栏本就在
 “跟随底部”时才滚；右栏翻历史时也不会被打断。“贴到底部”只在加载/切天时执行一次。
-滚动条抽搯另有一个原因：`.msg` 的 `content-visibility:auto` 配合固定的
+滚动条抽搐另有一个原因：`.msg` 的 `content-visibility:auto` 配合固定的
 `contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换导致 `scrollHeight` 反复变，
 现改为 `auto 64px`（现代浏览器会记住真实高度，旧的自动回退到固定值）。
 
