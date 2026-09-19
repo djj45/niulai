@@ -78,13 +78,40 @@ def _show_param_shape(param: str):
         print(f"         原始值: {param[:160]}{'…' if len(param) > 160 else ''}")
 
 
-def _verify(sample: dict):
-    """交给本地应用做 DES 解密 + sign 重算自检。"""
+def _save_sample(fields: dict, extra: dict | None = None):
+    """存样本：只存抓到的原样字段，**pwd 连密文都剔除**。
+
+    自检结果也一并写进去（verify 字段），这样结果不依赖终端回滚区，事后可查。
+    """
+    try:
+        os.makedirs(os.path.dirname(SAMPLE_PATH), exist_ok=True)
+        data = {}
+        if os.path.exists(SAMPLE_PATH):
+            with open(SAMPLE_PATH, encoding="utf-8") as f:
+                data = json.load(f) or {}
+        rec = {"url": extra.get("url") if extra else "",
+               "fields": {k: v for k, v in fields.items() if k != "pwd"},
+               "pwd_present": bool(fields.get("pwd")),
+               "captcha_param": fields.get("captchaVerifyParam", "")[:4000]}
+        if extra:
+            rec.update({k: v for k, v in extra.items() if k not in ("url",)})
+        data.setdefault("samples", []).append(rec)
+        data["note"] = "pwd 不落盘（明文与密文都不存）；captcha_param 一次性已失效"
+        with open(SAMPLE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:                                  # noqa: BLE001
+        print(f"  ⚠️  存样本失败：{e}")
+        return False
+
+
+def _verify(sample: dict) -> dict:
+    """交给本地应用做 DES 解密 + sign 重算自检。同时把结果写进样本文件。"""
     try:
         r = _post_json("/api/login/verify-sample", sample)
     except Exception as e:                                  # noqa: BLE001
         print(f"  ⚠️  调本地自检接口失败（应用没起？）：{e}")
-        return
+        return {}
     print("  ── 自检结果 " + "─" * 40)
     print(f"     字段: {', '.join(r.get('fields', []))}")
     if r.get("decrypt_ok"):
@@ -103,6 +130,7 @@ def _verify(sample: dict):
     else:
         print("     ⚠️  样本里没有 sign 字段，跳过校验")
     print("  " + "─" * 50)
+    return r
 
 
 def request(flow: http.HTTPFlow):
@@ -140,25 +168,10 @@ def _handle_login(flow: http.HTTPFlow):
     print()
     _show_param_shape(fields.get("captchaVerifyParam", ""))
     print()
-    _verify(fields)
+    verdict = _verify(fields)
 
-    # 存样本：只存抓到的原样密文，明文不入盘
-    try:
-        os.makedirs(os.path.dirname(SAMPLE_PATH), exist_ok=True)
-        existing = {}
-        if os.path.exists(SAMPLE_PATH):
-            with open(SAMPLE_PATH, encoding="utf-8") as f:
-                existing = json.load(f)
-        samples = existing.get("samples") or []
-        samples.append({"url": flow.request.pretty_url,
-                        "fields": {k: v for k, v in fields.items() if k != "pwd"},
-                        "pwd_present": bool(fields.get("pwd")),
-                        "note": "pwd 只记录存在性，不明文/密文落盘"})
-        with open(SAMPLE_PATH, "w", encoding="utf-8") as f:
-            json.dump({"samples": samples}, f, ensure_ascii=False, indent=2)
-        print(f"  📄 样本已存（不含 pwd）: data/seed/login_sample.json")
-    except Exception as e:                                  # noqa: BLE001
-        print(f"  ⚠️  存样本失败：{e}")
+    if _save_sample(fields, {"url": flow.request.pretty_url, "verify": verdict}):
+        print("  📄 样本+自检结果已存: data/seed/login_sample.json（不含 pwd）")
 
     t = threading.Thread(target=_grab_response, args=(flow,), daemon=True)
     with _lock:

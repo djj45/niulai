@@ -194,7 +194,22 @@ function g(e, t = "T137SRpGil0=") {                      // base64 → 8字节 4
 ```
 
 Python 侧复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`（已与 crypto-js
-**逐字节对比 6/6 一致**）。
+**逐字节对比 6/6 一致**，而且拿抓到的真实密文解出账号正确、重算 `sign` 也与抓到的
+逐字节相同）。
+
+`captchaVerifyParam` 的确切形状（实测 280 字符，**`Base64(JSON)`**）：
+
+```json
+{"certifyId":"T7CxI9I4gu","sceneId":"f374igpl","isSign":true,"securityToken":"<128 字符>"}
+```
+
+形状由插件的 `verifyType` 决定（见 `plugin.dec.wxapkg`），约牛传了 `success` 回调
+→ 故为 **3.0 / isSign 形态**。
+
+> ⚠️ **验证码 Web SDK 的票据形状不一样**（它给的是
+> `JSON{sceneId, certifyId, deviceToken, failover}`，没有 `isSign`/`securityToken`）。
+> 所以 `/login` 页里的 Web SDK **大概率过不了**约牛后端的核验——试一下就知道，
+> 报「验证失败」是预期结果，不影响任何东西。真正可靠的是下面这个抓包器。
 
 > **为什么不能“抓包重放”登录**：`captchaVerifyParam` 是硬前置（没它代码根本
 > 不发请求），且 `certifyId` **一次性**，后端还会服务端到服务端再调阿里云核验。

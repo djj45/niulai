@@ -250,7 +250,8 @@ networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
 
 ## 9. 未覆盖 / 待办
 
-- [x] ~~`getAuthToken` / `authTokenExchangeToken` 的 `sign` 拼接算法~~ **已破解**（见 §2，盐 `asdasdsadfg`，MD5 大写；另发现账号密码登录接口用 `encryptByDES` 加密账密）
+- [x] ~~`getAuthToken` / `authTokenExchangeToken` 的 `sign` 拼接算法~~ **已破解**（见 §2，盐 `asdasdsadfg`，MD5 大写；已用 7 组样本验证）
+- [x] ~~账号密码登录的账密加密~~ **已破解并抓包验证**（见 附1.5：DES 密钥 `T137SRpGil0=`）
 - [ ] 语音/视频消息格式未验证
 - [x] ~~`msgType=2`~~ **已确认不是语音**：是**文章推送卡片**（老师发的付费文章 `早盘预案` / `知识点小结`），载荷 `{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`，七天抓到 9 条（每天盘前 + 盘后各一条），`feeStatus=1`；`sourceUrl` 为小程序内 H5 路径，浏览器打不开
 - [ ] `msgType=3`（若存在）仍未遇到样本
@@ -259,24 +260,79 @@ networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
 - [ ] `getUserSig` 拿到的 userSig 理论上可独立连腾讯 IM 收消息（sdkAppId+userId+userSig），未实测
 - [ ] 微信主进程私有协议（消息同步等）不走系统代理，未在本次范围
 
-## 附1.5：账号密码登录与滑块验证（源码逆向，未抓包验证）
+## 附1.5：账号密码登录与滑块验证（源码逆向 + 抓包验证通过）
 
 滑块 = **阿里云验证码官方小程序插件** `AliyunCaptcha v3.0.0`（provider `wxbe275ff84246f1a4`），
-线上 sceneId=`f374igpl`（测试环境 `c613ekby`）。
+线上 sceneId=`f374igpl`（测试环境 `c613ekby`）。插件代码也解包出来了，在 `plugin.dec.wxapkg`。
 
 ```
 点登录 → 弹滑块(插件渲染) → 插件内部与阿里云验证服务交互(滑块图/轨迹上报)
        → 通过后回调 codeSuccess(captchaVerifyParam)
-       → captchaVerifyParam = 序列化(JSON{certifyId, sceneId, isSign:true, securityToken})
 
 POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm
-  accountName = encryptByDES(账号)     ← DES密钥在源码中
+  accountName = encryptByDES(账号)
   pwd         = encryptByDES(密码)
-  captchaVerifyParam / sceneId / loginSource=7 / timestamp / sign(§2算法)
+  loginVersion = ""    deviceId = ""      ← 空串，但**要参与签名**
+  loginSource = 7      sceneId  = f374igpl
+  captchaVerifyParam   timestamp
+  sign        = upperCase(getSign(其余字段))     ← 算法见 §2
+→ resp.data **就是 centraltoken**，不需要再走 §2 那五步
 ```
 
-约牛后端收到 ticket 后会**服务端到服务端**调阿里云做二次核验（抓包看不到）。
-certifyId 一次性、短时效——**抓包/重放无法免除滑块**，每次账密登录都需要真人（或轨迹模拟）通过验证。
+### DES 密钥（模块级默认参数，不是服务端密钥）
+
+```js
+function g(e, t = "T137SRpGil0=") {                   // base64 → 8 字节 4f5dfb491a468a5d
+  var r = CryptoJS.enc.Base64.parse(t),
+      n = CryptoJS.DES.encrypt(e, r, {mode: ECB, padding: Pkcs7});
+  return n.ciphertext.toString(CryptoJS.enc.Base64)
+          .replace(/\//g, ",").replace(/=/g, "_").replace(/\+/g, ".");
+}
+```
+
+Python 复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`。已验证：
+与 crypto-js **逐字节对比 6/6 一致**；而且用抓到的真实密文解出账号正确、
+重算 `sign` 与抓到的**逐字节相同**。
+
+### captchaVerifyParam 的确切形状
+
+**`Base64(JSON)`**，实测 280 字符：
+
+```json
+{"certifyId":"T7CxI9I4gu","sceneId":"f374igpl","isSign":true,"securityToken":"<128 字符>"}
+```
+
+形状由插件的 `verifyType` 决定 —— 插件初始化时看调用方传了什么回调：
+
+```js
+// plugin/appservice.js
+x.success && typeof x.success === "function"
+  ? (_Config._extend({verifyType: "3.0"}), delete _Config.captchaVerifyCallback, ...)
+  : (_Config._extend({verifyType: "2.0"}), ...)
+
+// 成功路径
+r = "1.0" === _Config.verifyType ? n
+    : Ot.stringify(Rt.Utf8.parse(JSON.stringify({
+        certifyId: n, sceneId: _Config.SceneId, isSign: !0,
+        securityToken: _Config.securityToken            // init 时阿里云下发
+      })))
+```
+
+约牛传了 `success` 回调（页面里的 `codeSuccess`）→ 故为 **verifyType 3.0 / isSign 形态**。
+
+> ⚠️ **验证码 Web SDK 的票据形状不同**（实测其 `captchaVerifyCallback` 收到的是
+> `JSON{sceneId, certifyId, deviceToken, failover}`，没有 `isSign`/`securityToken`）。
+> 所以想用浏览器 Web SDK 代替小程序插件过滑块，**票据对不上、会被服务端核验拒**。
+
+### 其它已核实细节
+
+- 请求层：`if (!ignoreToken) { f[tokenName] = wx.getStorageSync("token") }`，而登录成功
+do `wx.setStorageSync("token", resp.data)` → 两者是同一个键，故 **resp.data 即 centraltoken**。
+- `getSign` 只 `delete channel`，**不过滤空值**（`loginVersion=""`/`deviceId=""` 要参与签名）；
+返回**小写** MD5，由调用方 `upperCase()`。
+- 约牛后端收到 ticket 后会**服务端到服务端**再调阿里云核验（抓包看不到）。
+  `certifyId` 一次性、短时效 → **抓包/重放无法免除滑块**，每次账密登录都要重新过。
+- 抓包器：`tools/capture_login.py`（抓到即解账密、重算 sign 比对、并把响应 token 喂给应用）。
 
 另：源码 config 模块泄露了全套测试环境域名（`test-account.zx093.cn`、`touguapi-test.zx093.com` 等）。
 
