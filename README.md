@@ -112,38 +112,51 @@ tooltip 上悬停查看。`/api/status` 的 `sync.interval` / `sync.interval_rea
 
 不需要重新登录微信。只要小程序里还有有效会话，**进一次聊天室**就会带上 `centraltoken` 请求头。
 
+抓包最烦的是那堆 `networksetup`（还要记住 SOCKS 的坑、忘了恢复就没网），所以包了一个开关：
+
 ```bash
-# 终端 A：启动抓包（自动把抓到的 token 交给本地应用校验并写入）
+# 挂上 mitmdump + 切换系统代理（会自动把你原来的代理设置记到 /tmp/niulai_proxy_state）
+tools/proxy_capture.sh on
+
+# → 把微信里的小程序窗口【彻底关掉再重开】→ 打开约牛，进任意老师聊天室
+#   终端出现 ✅ 就完成了（token 自动写入 + 房间/IM 自动带出，不用在网页里填任何东西）
+
+# 收尾：一条命令精确还原（连 SOCKS 的开关状态一起还原）
+tools/proxy_capture.sh off
+
+tools/proxy_capture.sh status    # 随时看：代理 / mitmdump / 证书
+```
+
+脚本干的事（想手敲也行，完全等价）：
+
+```bash
+# ← 等价于 on
 cd /Users/djj45/code/niulai
 mitmdump -p 8888 --mode upstream:http://127.0.0.1:20122 -s tools/capture_token.py
-#   ↑ 如果你平时不用代理，去掉 --mode upstream:...；
-#     如果代理不是 20122，换成你实际的（见 protocol.md §8）
-```
-
-```bash
-# 终端 B：把系统代理指向 mitmdump
-networksetup -setwebproxy "Wi-Fi" 127.0.0.1 8888
+networksetup -setwebproxy       "Wi-Fi" 127.0.0.1 8888
 networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 8888
-networksetup -setsocksfirewallproxystate "Wi-Fi" off
-```
+networksetup -setsocksfirewallproxystate "Wi-Fi" off    # ← 这行必须
 
-然后：**把微信里的小程序窗口彻底关掉再重开** → 打开约牛 → 进任意一个老师的聊天室。
-终端出现 `✅ centraltoken 已自动写入并验证通过` 就完成了（应用会自动带出房间信息、
-刷新 `userSig`、重启实时通道，**不需要在网页里手工填任何东西**）。
-
-```bash
-# 收尾：恢复系统代理
-networksetup -setwebproxy "Wi-Fi" 127.0.0.1 20122
+# ← 等价于 off
+networksetup -setwebproxy       "Wi-Fi" 127.0.0.1 20122
 networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 20122
-# SOCKS 的「端口」与「开关」是两个参数：
-#   -setsocksfirewallproxystate 只接受 on/off（写 -setsocksfirewallproxystate "Wi-Fi" 20122 会报
-#   "The parameters were not valid."），端口要用 -setsocksfirewallproxy 设。
-# 原来 SOCKS 就是关的话，下面两行可以不做。
 networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
 networksetup -setsocksfirewallproxystate "Wi-Fi" on
-# 检查三条代理是否都回到 20122
-networksetup -getwebproxy "Wi-Fi"; networksetup -getsecurewebproxy "Wi-Fi"; networksetup -getsocksfirewallproxy "Wi-Fi"
+# SOCKS 的「端口」与「开关」是两个参数：-setsocksfirewallproxystate 只接受 on/off
+#   （写成 -setsocksfirewallproxystate "Wi-Fi" 20122 会报 The parameters were not valid.），
+#   端口要用 -setsocksfirewallproxy 设。
 ```
+
+> **为什么 `on` 里必须把 SOCKS 关掉**：SOCKS 和 HTTP 代理同时开着时，
+> 部分连接会走 SOCKS **直达上游代理**、绕过 mitmdump，表现就是“有些请求抓得到、
+> 有些抓不到”—— 最难查的坑。而 `off` 会把它按原状恢复回去。
+
+环境变量（脚本同样支持）：`NIULAI_WIFI`（网络服务名，默认 `Wi-Fi`）、
+`NIULAI_UPSTREAM_PORT`（你平时的代理端口，默认 `20122`）、
+`NIULAI_CAPTURE_PORT`（默认 `8888`）、`NIULAI_ADDON`（默认 `tools/capture_token.py`）。
+
+> 实测 `on → off` 往返能**精确还原**（包括把 SOCKS 从 `off` 恢复回 `on`）；
+> `on` 只在第一次记录原始状态，重复执行不会把 8888 自己存成“原始值”。
 
 > 漏抓了？终端会提示检查项（系统代理、小程序窗口是否重开、是否进了聊天室）。
 > 只读流量，不修改/不重放任何请求，不涉及账号密码。
