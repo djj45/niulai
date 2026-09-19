@@ -159,6 +159,61 @@ mitmdump -q -nr ~/.zcode/workspace/default/data/capture/flows_xxx.mitm -s tools/
 uv run python tools/import_seed.py
 ```
 
+### ④ 账号密码登录（过滑块，不用抓包）
+
+只要你能在浏览器里过一下阿里云滑块，就不用抓包了：
+
+1. 打开 <https://127.0.0.1:5002/login>（设置弹窗里也有入口）
+2. 填账号密码 → 点登录 → 过滑块
+3. 后端自动完成 `accountPwdVerifyLogin.htm`，拿到的 `data` 就是 **centraltoken**，
+   并自动带出房间信息 / IM 凭证（复用 `/api/probe`）
+
+链路（源码逆向 + 已交叉验证）：
+
+```
+POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm
+  accountName = encryptByDES(账号)      DES/ECB/PKCS7，密钥硬编码在小程序里
+  pwd         = encryptByDES(密码)
+  loginVersion = ""   deviceId = ""     空串，但**要参与签名**
+  loginSource = 7     sceneId = f374igpl
+  captchaVerifyParam = 阿里云滑块通过后的票据（一次性、短时效）
+  timestamp   = 毫秒
+  sign        = upperCase(getSign(其余字段))
+→ resp.data 就是 centraltoken
+```
+
+**DES 密钥**（源码里的默认参数，不是服务端密钥）：
+
+```js
+function g(e, t = "T137SRpGil0=") {                      // base64 → 8字节 4f5dfb491a468a5d
+  var r = CryptoJS.enc.Base64.parse(t),
+      n = CryptoJS.DES.encrypt(e, r, {mode: ECB, padding: Pkcs7});
+  return n.ciphertext.toString(CryptoJS.enc.Base64)
+          .replace(/\//g, ",").replace(/=/g, "_").replace(/\+/g, ".");
+}
+```
+
+Python 侧复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`（已与 crypto-js
+**逐字节对比 6/6 一致**）。
+
+> **为什么不能“抓包重放”登录**：`captchaVerifyParam` 是硬前置（没它代码根本
+> 不发请求），且 `certifyId` **一次性**，后端还会服务端到服务端再调阿里云核验。
+> 所以每次登录都得重新过滑块 —— 这也是不推荐折腾账密登录的原因：
+> 用 `tools/capture_token.py` 抓现成的 token 更省事（token 是登录的产物，能管很久）。
+
+想反向验证我们的复刻对不对，就跑抓包器：
+
+```bash
+mitmdump -p 8888 --mode upstream:http://127.0.0.1:20122 -s tools/capture_login.py
+# 然后在小程序里真点一次账号密码登录，终端会当场打印：
+#   ✅ DES 解密成功 → accountName = '...'
+#   ✅ sign 复刻正确（重算 = 抓到的）
+#   ✅ 拿到 token → 喂给应用
+```
+
+该工具**不把明文密码写盘**（样本里连 pwd 的密文都剔除），只把其余字段存到
+`data/seed/login_sample.json`。
+
 ### ③ 页面里手填
 
 打开界面 → 右上角 **⚙️ 鉴权/设置**：

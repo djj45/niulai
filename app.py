@@ -888,25 +888,24 @@ async def api_settings():
     return jsonify({"status": "ok"})
 
 
-@app.route("/api/probe", methods=["POST"])
-async def api_probe():
-    """验证 centraltoken，并自动带出房间信息 + IM 凭证。"""
-    data = await request.get_json(force=True) or {}
-    token = (data.get("centraltoken") or "").strip()
-    teacher_id = int(data.get("teacher_id") or cfg().get("teacher_id") or 328)
-    if not token:
-        return jsonify({"error": "请填写 centraltoken"}), 400
+def apply_centraltoken(token: str, teacher_id: int) -> tuple[dict, str]:
+    """校验 centraltoken 并落库：房间信息 + IM 凭证 + 我的资料。
+
+    返回 (结果, 错误串)。/api/probe（粘贴 token）与 /api/login/password
+    （账密登录后自动接上）共用。内部全是同步 HTTP，调用方要丢线程池。
+    """
     client = TouguClient(token)
     try:
         room = client.get_room_by_teacher(teacher_id)
     except AuthExpired:
-        return jsonify({"error": "centraltoken 已失效（返回 200001），请重新抓取"}), 400
+        return {}, "centraltoken 已失效（返回 200001），请重新抓取"
     except NiuLaiError as e:
-        return jsonify({"error": str(e)}), 400
+        return {}, str(e)
 
     out = {"room": {"id": room.get("id"), "name": room.get("name"),
                     "teacher": room.get("realName") or room.get("teacherName"),
-                    "imGroupId": room.get("imGroupId"), "certificateNum": room.get("certificateNum")}}
+                    "imGroupId": room.get("imGroupId"),
+                    "certificateNum": room.get("certificateNum")}}
     with _db_lock:
         db.save_room(conn, room)
         db.set_setting(conn, "centraltoken", token)
@@ -938,7 +937,95 @@ async def api_probe():
     restart_im()
     reset_sync_backoff()      # 新 token 生效，同步退避立即解除
     out["im_ready"] = im_ready
+    return out, ""
+
+
+@app.route("/api/probe", methods=["POST"])
+async def api_probe():
+    """验证 centraltoken，并自动带出房间信息 + IM 凭证。"""
+    data = await request.get_json(force=True) or {}
+    token = (data.get("centraltoken") or "").strip()
+    teacher_id = int(data.get("teacher_id") or cfg().get("teacher_id") or 328)
+    if not token:
+        return jsonify({"error": "请填写 centraltoken"}), 400
+    # 同步 HTTP，别卡着事件循环（同 /api/media 那个坑）
+    out, err = await asyncio.to_thread(apply_centraltoken, token, teacher_id)
+    if err:
+        return jsonify({"error": err}), 400
     return jsonify(out)
+
+
+# ===================== 账号密码登录 =====================
+# 链路（源码逆向 + 已用真实 crypto-js 交叉验证）：
+#   accountName/pwd = encryptByDES(...)   DES/ECB/PKCS7，密钥硬编码在小程序里
+#   + captchaVerifyParam（阿里云验证码票据，一次性、短时效）
+#   → POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm
+#   → data 就是 centraltoken（小程序把它 setStorageSync("token") 后当 centralToken 头用）
+@app.route("/api/login/password", methods=["POST"])
+async def api_login_password():
+    """账号密码登录 → 自动拿到 centraltoken 并完成配置。
+
+    body: {account, password, captcha_verify_param, scene_id?}
+    captcha_verify_param 是阿里云验证码通过后的票据（在 /login 页面过滑块取）。
+    """
+    data = await request.get_json(force=True) or {}
+    account = (data.get("account") or "").strip()
+    password = data.get("password") or ""
+    param = (data.get("captcha_verify_param") or "").strip()
+    scene = (data.get("scene_id") or api.CAPTCHA_SCENE_ID).strip()
+    if not account or not password:
+        return jsonify({"error": "账号和密码都要填"}), 400
+    if not param:
+        return jsonify({"error": "缺少 captchaVerifyParam：先在页面上过滑块，或粘贴票据"}), 400
+    try:
+        token = await asyncio.to_thread(api.login_by_password, account, password, param, scene)
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:                                  # noqa: BLE001
+        return jsonify({"error": f"请求异常：{e}"}), 500
+    out, err = await asyncio.to_thread(apply_centraltoken, token,
+                                       int(cfg().get("teacher_id") or 328))
+    if err:
+        return jsonify({"error": f"登录成功但校验失败：{err}", "token": token}), 400
+    out["token_len"] = len(token)
+    out["token_prefix"] = token[:12] + "…"
+    return jsonify(out)
+
+
+@app.route("/api/login/verify-sample", methods=["POST"])
+async def api_login_verify_sample():
+    """逆向自检：拿抓包抓到的 accountPwdVerifyLogin 请求体，
+    解出账密、重算 sign，验证我们对源码的复刻是否逐字节正确。
+
+    body: 直接给抓到的表单字段（accountName/pwd/sign/...），或 {body: {...}}
+    """
+    data = await request.get_json(force=True) or {}
+    body = data.get("body") or data
+
+    def _run():
+        out = {"fields": sorted(k for k in body if k != "sign")}
+        try:
+            out["account"] = api.decrypt_by_des(body.get("accountName", ""))
+            out["pwd_len"] = len(api.decrypt_by_des(body.get("pwd", "")))
+            out["decrypt_ok"] = True
+        except Exception as e:                              # noqa: BLE001
+            out["decrypt_ok"] = False
+            out["decrypt_error"] = str(e)
+        got = body.get("sign")
+        if got:
+            without = {k: v for k, v in body.items() if k != "sign"}
+            out["sign_expected"] = api.get_sign(without)
+            out["sign_got"] = str(got)
+            out["sign_ok"] = out["sign_expected"].upper() == str(got).upper()
+        return out
+
+    return jsonify(await asyncio.to_thread(_run))
+
+
+@app.route("/login")
+async def login_page():
+    """账号密码登录页：本地页面 + 阿里云验证码 Web SDK，过滑块后自动登录。"""
+    return await render_template("login.html", scene_id=api.CAPTCHA_SCENE_ID)
 
 
 @app.route("/api/probe-im", methods=["POST"])

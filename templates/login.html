@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>账号密码登录 · 约牛</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --border:#e3e5e9; --text:#1f2329; --muted:#8a9099;
+          --accent:#2b6cff; --ok:#1a9f5a; --err:#e03131; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:28px 16px; background:var(--bg); color:var(--text);
+         font:14px/1.6 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif; }
+  .wrap { max-width:560px; margin:0 auto; }
+  h1 { font-size:19px; margin:0 0 4px; }
+  .sub { color:var(--muted); font-size:12px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px;
+          padding:20px; margin-bottom:16px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:0 0 5px; }
+  input[type=text], input[type=password], textarea {
+    width:100%; padding:9px 11px; border:1px solid var(--border); border-radius:5px;
+    font-size:13px; font-family:inherit; }
+  input:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  .field { margin-bottom:13px; }
+  textarea { min-height:62px; resize:vertical; word-break:break-all; font-family:ui-monospace,monospace;
+             font-size:11px; }
+  button { padding:9px 20px; border:none; border-radius:5px; background:var(--accent); color:#fff;
+           font-size:13px; cursor:pointer; font-family:inherit; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.ghost { background:#fff; color:var(--text); border:1px solid var(--border); }
+  .row { display:flex; gap:10px; align-items:center; }
+  .msg { font-size:13px; margin-top:12px; white-space:pre-wrap; word-break:break-all; }
+  .msg.ok { color:var(--ok); } .msg.err { color:var(--err); }
+  .kv { font-size:12px; color:var(--muted); margin-top:8px; }
+  code { background:#f0f2f5; padding:1px 5px; border-radius:3px; font-size:12px; }
+  .hint { font-size:12px; color:var(--muted); line-height:1.75; }
+  .hint b { color:var(--text); }
+  #captcha-box { margin:4px 0 14px; }
+  .tag { display:inline-block; font-size:11px; padding:1px 7px; border-radius:3px;
+         background:#eef3ff; color:var(--accent); margin-left:6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>账号密码登录</h1>
+  <div class="sub">
+    走小程序同一条链路：<code>accountPwdVerifyLogin.htm</code>。
+    账密用小程序里硬编码的 DES 密钥本地加密，过一次滑块拿到 <code>captchaVerifyParam</code>，
+    登录成功返回值就是 <b>centraltoken</b>，会自动写入并刷新 IM 凭证。
+  </div>
+
+  <div class="card">
+    <div class="field">
+      <label>账号（手机号 / 约牛号）</label>
+      <input type="text" id="account" autocomplete="username" placeholder="13800000000">
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <div class="field">
+      <label>验证码<span class="tag" id="sceneTag"></span></label>
+      <div id="captcha-box"></div>
+      <textarea id="paramBox" placeholder="captchaVerifyParam（过完滑块会自动填在这里；也可以从别处粘进来直接登录）"></textarea>
+    </div>
+    <div class="row">
+      <button id="submitBtn" onclick="manualSubmit()">登录并写入 centraltoken</button>
+      <button class="ghost" onclick="usePastedParam()">用粘贴的票据直接登录</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card hint">
+    <b>说明</b><br>
+    · 账号密码只在本机加密后直接发给 <code>account.zx093.cn</code>，不经过任何第三方；不会落盘。<br>
+    · 滑块是阿里云验证码，<b>sceneId</b> 取自小程序源码。若你的账号/网络让阿里云判定为低风险，
+      可能不弹挑战直接通过。<br>
+    · 票据（<code>captchaVerifyParam</code>）<b>一次性且短时效</b>，所以重放无用——
+      每次登录都得重新过一遍。<br>
+    · 只想拿 token 的话更省事：用 <code>tools/capture_token.py</code> 抓现成的，不必走这条。
+  </div>
+</div>
+
+<script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+<script>
+const SCENE_ID = "{{ scene_id }}";
+let captchaInstance = null;
+let busy = false;
+
+const $ = id => document.getElementById(id);
+function say(text, cls) {
+  const el = $("msg");
+  el.textContent = text || "";
+  el.className = "msg" + (cls ? " " + cls : "");
+}
+$("sceneTag").textContent = "sceneId=" + SCENE_ID;
+
+/** 真正干活：拿票据 + 账密去登录 */
+async function doLogin(param) {
+  const account = $("account").value.trim();
+  const password = $("password").value;
+  if (!account || !password) { say("账号和密码都要填", "err"); return false; }
+  if (!param) { say("还没拿到 captchaVerifyParam", "err"); return false; }
+  $("submitBtn").disabled = true;
+  say("登录中…");
+  try {
+    const r = await fetch("/api/login/password", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account, password, captcha_verify_param: param })
+    });
+    const d = await r.json();
+    if (d.error) { say("❌ " + d.error, "err"); return false; }
+    const im = d.im ? `sdkAppId=${d.im.sdkAppId}` : (d.im_error ? "IM 凭证获取失败：" + d.im_error : "");
+    say(`✅ 登录成功，已写入 centraltoken（${d.token_prefix} 共 ${d.token_len} 字符）\n`
+      + `房间 #${d.room.id} ${d.room.name || ""} · 老师 ${d.room.teacher || "-"}\n`
+      + `IM ${d.im_ready ? "已就绪" : "未就绪"} ${im}\n\n可以关掉本页，回到聊天室界面了。`, "ok");
+    return true;
+  } catch (e) {
+    say("❌ 请求失败：" + e, "err");
+    return false;
+  } finally {
+    $("submitBtn").disabled = false;
+  }
+}
+
+/**
+ * 阿里云验证码通过后的回调。
+ * SDK 会把票据 JSON 串交给我们（形如 {"sceneId":..,"certifyId":..,"deviceToken":..,"failover":"T"}），
+ * 顺手填进文本框（方便复制/复用），然后直接拿它去登录。
+ * 返回 { captchaResult, bizResult } 告诉 SDK 业务是否通过。
+ */
+async function captchaVerifyCallback(captchaVerifyParam) {
+  $("paramBox").value = captchaVerifyParam;
+  const ok = await doLogin(captchaVerifyParam);
+  return { captchaResult: true, bizResult: !!ok };
+}
+function onBizResultCallback(ok) { if (!ok) say("验证码未通过", "err"); }
+function getInstance(inst) { captchaInstance = inst; }
+
+/** 兜底：不触发滑块，直接用文本框里粘贴的票据登录 */
+function usePastedParam() {
+  const p = $("paramBox").value.trim();
+  if (!p) { say("先粘贴 captchaVerifyParam", "err"); return; }
+  doLogin(p);
+}
+
+/** 按钮如果没交给 SDK 接管，就自己弹一次滑块 */
+function manualSubmit() {
+  if (captchaInstance && typeof captchaInstance.show === "function") {
+    captchaInstance.show();
+    return;
+  }
+  const p = $("paramBox").value.trim();
+  if (p) { doLogin(p); return; }
+  say("验证码组件还没就绪；可以等它加载完，或粘贴票据后点右边那个按钮", "err");
+}
+
+(function initCaptcha() {
+  if (typeof window.initAliyunCaptcha !== "function") {
+    say("阿里云验证码 SDK 没加载出来（网络/代理问题？）。\n"
+      + "不影响：如果别处能拿到 captchaVerifyParam，粘进上面那个框照样能登录。", "err");
+    return;
+  }
+  try {
+    window.initAliyunCaptcha({
+      SceneId: SCENE_ID,
+      prefix: "nl",
+      mode: "popup",
+      element: "#captcha-box",
+      button: "#submitBtn",
+      captchaVerifyCallback: captchaVerifyCallback,
+      onBizResultCallback: onBizResultCallback,
+      getInstance: getInstance,
+      slideStyle: { width: 360, height: 40 },
+      language: "cn",
+      region: "cn",
+      immediate: false,
+      timeout: 10000,
+      autoRefresh: true,
+      // 万一 SDK 用 prefix 去找全局回调，这里也挂一份
+      fail: e => say("验证码初始化/验证失败：" + (e && e.msg ? e.msg : e), "err")
+    });
+    window.nlCaptchaVerifyCallback = captchaVerifyCallback;
+  } catch (e) {
+    say("验证码初始化异常：" + e
+      + "\n（若提示场景不存在，说明这个 sceneId 只配了小程序端，Web SDK 用不了——\n"
+      + "  那就走抓包：见 tools/capture_login.py）", "err");
+  }
+})();
+</script>
+</body>
+</html>

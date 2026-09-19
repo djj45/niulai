@@ -98,6 +98,104 @@ def now_ms() -> str:
     return str(int(time.time() * 1000))
 
 
+# ===================== 账号密码登录（DES 加密账密） =====================
+# 源码 `app-service.js` 里的原实现（注意密钥是**硬编码的默认参数**，不是服务端密钥）：
+#
+#   function g(e, t = "T137SRpGil0=") {
+#     var r = CryptoJS.enc.Base64.parse(t),
+#         n = CryptoJS.DES.encrypt(e, r, {mode: ECB, padding: Pkcs7});
+#     return n.ciphertext.toString(CryptoJS.enc.Base64)
+#             .replace(/\//g, ",").replace(/=/g, "_").replace(/\+/g, ".");
+#   }
+#
+# 所以本地完全可复现。验证方式：与 crypto-js 的输出逐字节对比（已做，6/6 一致）。
+DES_KEY_B64 = "T137SRpGil0="                  # base64 解码＝ 8 字节 4f5dfb491a468a5d
+PWD_LOGIN_URL = "https://account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm"
+CAPTCHA_SCENE_ID = "f374igpl"                 # 线上阿里云验证码 sceneId（测试环境 c613ekby）
+_TO_JS = (("/", ","), ("=", "_"), ("+", "."))
+_FROM_JS = ((".", "+"), (",", "/"), ("_", "="))
+
+
+def _des():
+    from Crypto.Cipher import DES
+    return DES
+
+
+def encrypt_by_des(text: str) -> str:
+    """复刻小程序 `encryptByDES`：DES/ECB/PKCS7，输出 Base64 后再把 `/` `=` `+` 换成 `,` `_` `.`。"""
+    import base64
+    from Crypto.Util.Padding import pad
+    raw = _des().new(base64.b64decode(DES_KEY_B64), _des().MODE_ECB).encrypt(
+        pad(str(text).encode(), 8))
+    out = base64.b64encode(raw).decode()
+    for a, b in _TO_JS:
+        out = out.replace(a, b)
+    return out
+
+
+def decrypt_by_des(cipher: str) -> str:
+    """反向（用于验证抓包样本）：`,` `_` `.` 换回 `/` `=` `+` 再解密。"""
+    import base64
+    from Crypto.Util.Padding import unpad
+    s = str(cipher)
+    for a, b in _FROM_JS:
+        s = s.replace(a, b)
+    return unpad(_des().new(base64.b64decode(DES_KEY_B64), _des().MODE_ECB).decrypt(
+        base64.b64decode(s)), 8).decode()
+
+
+def password_login_params(account: str, password: str, captcha_verify_param: str,
+                          scene_id: str = CAPTCHA_SCENE_ID) -> dict:
+    """拼出 `accountPwdVerifyLogin` 的请求体（含 sign）。
+
+    字段取自源码：loginVersion/deviceId 是**空串且要参与签名**
+    （getSign 只删了 channel，不过滤空值）；sign = upperCase(getSign(body))。
+    """
+    body = {
+        "accountName": encrypt_by_des(account),
+        "pwd": encrypt_by_des(password),
+        "loginVersion": "",
+        "deviceId": "",
+        "loginSource": LOGIN_SOURCE,
+        "captchaVerifyParam": captcha_verify_param,
+        "sceneId": scene_id,
+        "timestamp": now_ms(),
+    }
+    body["sign"] = get_sign(body)          # 必须在不含 sign 时算
+    return body
+
+
+def login_by_password(account: str, password: str, captcha_verify_param: str,
+                      scene_id: str = CAPTCHA_SCENE_ID) -> str:
+    """账号密码登录 → 直接返回 **centraltoken**。
+
+    源码 `accountPwdVerifyLogin().then(e => wx.setStorageSync("token", e.data))`
+    而请求层会把 storage 里的 `token` 当作 `centralToken` 请求头带上 ——
+    所以返回值就是业务的 centraltoken，不需要再走 §2 那五步 SSO 链。
+
+    唯一前置：`captchaVerifyParam`（阿里云验证码通过后的票据，一次性、短时效）。
+    """
+    if not (account and password):
+        raise NiuLaiError("账号和密码都要填")
+    if not captcha_verify_param:
+        raise NiuLaiError("缺少 captchaVerifyParam（先过滑块，或直接粘贴票据）")
+    body = password_login_params(account, password, captcha_verify_param, scene_id)
+    r = requests.post(PWD_LOGIN_URL, data=body,
+                      headers={"user-agent": UA, "referer": REFERER}, timeout=DEFAULT_TIMEOUT)
+    try:
+        j = r.json()
+    except ValueError:
+        raise NiuLaiError(f"登录返回不是 JSON（HTTP {r.status_code}）：{r.text[:200]}")
+    status = str(j.get("status"))
+    if status not in ("0", "1", "100"):
+        msg = j.get("message") or j.get("msg") or str(j)[:200]
+        raise NiuLaiError(f"登录失败 [{status}] {msg}")
+    token = j.get("data")
+    if not token or not isinstance(token, str):
+        raise NiuLaiError(f"登录成功但没拿到 token：{str(j)[:200]}")
+    return token
+
+
 # ===================== 时间/媒体工具 =====================
 def parse_msg_time(msg_date: str):
     """'2026-09-17 21:27:39' → unix 秒；解析失败返回 0。"""
