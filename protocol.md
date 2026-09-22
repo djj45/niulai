@@ -256,7 +256,7 @@ networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
 - [x] ~~`msgType=2`~~ **已确认不是语音**：是**文章推送卡片**（老师发的付费文章 `早盘预案` / `知识点小结`），载荷 `{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`，七天抓到 9 条（每天盘前 + 盘后各一条），`feeStatus=1`；`sourceUrl` 为小程序内 H5 路径，浏览器打不开
 - [ ] `msgType=3`（若存在）仍未遇到样本
 - [ ] `estr` 字段用途未明
-- [ ] centraltoken 有效期未测
+- [ ] centraltoken 有效期未测（实测同一张 token 用了 ≥3.6 天仍有效，未见过期样本；小程序端重新登录也不会吊销旧 token）
 - [x] ~~`getUserSig` 拿到的 userSig 理论上可独立连腾讯 IM 收消息（sdkAppId+userId+userSig），未实测~~ **已实测**：sdkAppId+sdkUserId+userSig 直连 wss 收推没问题；**有效期很短（约几十分钟）**，过期后 wslogin 必 `70402 Invalid parameters`。`getUserSig.htm` 可随时重取、新旧 sig 并存不互踢（小程序就是每次启动重取）；app 侧已做 login_failed 自动续签重连
 - [ ] 微信主进程私有协议（消息同步等）不走系统代理，未在本次范围
 
