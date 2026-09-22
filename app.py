@@ -673,7 +673,11 @@ def _im_on_event(e: dict):
     broadcast({"type": "event", "data": e})
 
 
+_im_sig_refresh_at = 0.0
+
+
 def _im_on_status(state: str, detail: str):
+    global _im_sig_refresh_at
     with _im_status_lock:
         was = _im_state["state"]
         _im_state["state"] = state
@@ -683,6 +687,41 @@ def _im_on_status(state: str, detail: str):
     # IM 客户端没实现离线补拉，断开窗口里的消息只能靠 REST 找回来。
     if state == "online" and was != "online":
         _sync_wake.set()
+    # 70402 = userSig 过期（约牛只签几十分钟，小程序每次启动都重新拿）：
+    # 用 centraltoken 现换一张并立刻重连。30s 冷却，centraltoken 也死了时不刷屏。
+    if state == "login_failed" and time.time() >= _im_sig_refresh_at:
+        _im_sig_refresh_at = time.time() + 30
+        threading.Thread(target=_auto_relogin, daemon=True).start()
+
+
+def _refresh_im_sig() -> bool:
+    """用 centraltoken 换一张新 userSig（含 sdkAppId / sdkUserId 一并刷新）。"""
+    c = cfg()
+    if not c.get("centraltoken"):
+        return False
+    try:
+        client = _client()
+        sdk = client.get_sdk_app_id()
+        sig = client.get_user_sig()
+    except Exception as e:                              # noqa: BLE001
+        print(f"[IM] userSig 续签失败：{e}", flush=True)
+        return False
+    if not (sig.get("userSig") and sig.get("sdkUserId")):
+        print(f"[IM] userSig 续签失败：返回缺字段 {sig}", flush=True)
+        return False
+    with _db_lock:
+        if sdk:
+            db.set_setting(conn, "im_sdk_app_id", str(sdk))
+        db.set_setting(conn, "im_identifier", sig["sdkUserId"])
+        db.set_setting(conn, "im_user_sig", sig["userSig"])
+    print(f"[IM] userSig 已续签（{sig['sdkUserId']}）", flush=True)
+    return True
+
+
+def _auto_relogin():
+    """login_failed 回调的续签线程：换到新 sig 就叫醒 supervisor 重连。"""
+    if _refresh_im_sig():
+        _im_reload.set()
 
 
 async def _im_session(c: dict):
@@ -723,7 +762,11 @@ def _im_supervisor():
         except Exception as e:
             print(f"[IM] supervisor 异常：{e}")
         if not _im_reload.is_set():
-            time.sleep(5)
+            # login_failed（sig/token 失效）时放慢到 60s，别拿废票每 5s 砸登录口；
+            # 续签成功会 set(_im_reload)，走不到这里，立即重连。
+            with _im_status_lock:
+                failed = _im_state.get("state") == "login_failed"
+            time.sleep(60 if failed else 5)
 
 
 def restart_im():

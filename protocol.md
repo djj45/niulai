@@ -257,7 +257,7 @@ networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
 - [ ] `msgType=3`（若存在）仍未遇到样本
 - [ ] `estr` 字段用途未明
 - [ ] centraltoken 有效期未测
-- [ ] `getUserSig` 拿到的 userSig 理论上可独立连腾讯 IM 收消息（sdkAppId+userId+userSig），未实测
+- [x] ~~`getUserSig` 拿到的 userSig 理论上可独立连腾讯 IM 收消息（sdkAppId+userId+userSig），未实测~~ **已实测**：sdkAppId+sdkUserId+userSig 直连 wss 收推没问题；**有效期很短（约几十分钟）**，过期后 wslogin 必 `70402 Invalid parameters`。`getUserSig.htm` 可随时重取、新旧 sig 并存不互踢（小程序就是每次启动重取）；app 侧已做 login_failed 自动续签重连
 - [ ] 微信主进程私有协议（消息同步等）不走系统代理，未在本次范围
 
 ## 附1.5：账号密码登录与滑块验证（源码逆向 + 抓包验证通过）
