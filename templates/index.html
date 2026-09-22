@@ -1363,7 +1363,7 @@ async function loadStatus() {
       + `后台自动核对：每 ${iv ? iv + " 秒" : "-"}（${d.sync.interval_reason || "-"}）`;
   }
   // 同步进度（刷新页面时如果后台还在跑，也能接上）
-  if (d.sync && d.sync.running) onSyncProgress(d.sync);
+  if (d.sync && d.sync.running) { onSyncProgress(d.sync); startSyncPolling(); }
   else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
   const modalOpen = document.getElementById("settingsModal").style.display === "flex";
   if (!modalOpen) {
@@ -1471,8 +1471,19 @@ async function _postSync(body, hint) {
   const r = await fetch("/api/sync", { method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify(body) });
   const d = await r.json();
-  if (d.error) { alert(d.error); if (r.status === 401) openSettings(); return false; }
+  if (d.error) {
+    // 409 = 已有同步在跑（多半是后台自动核对撞上了）：
+    // 别只弹窗就走，直接把进度条挂到那个正在跑的任务上。
+    if (r.status === 409 && d.state && d.state.running) {
+      showSyncBar(hint);
+      onSyncProgress(d.state);
+      startSyncPolling();
+      return true;
+    }
+    alert(d.error); if (r.status === 401) openSettings(); return false;
+  }
   showSyncBar(hint);
+  startSyncPolling();
   return true;
 }
 
@@ -1496,11 +1507,34 @@ function hideSyncBar() {
   document.getElementById("syncBar").classList.remove("show");
 }
 
-/** 同步进度（由 WebSocket 的 sync_progress 驱动） */
+// 进度轮询兜底：WebSocket 断了（后端重启、休眠唤醒）进度条也能继续走。
+// 只在消息同步的入口启动；媒体下载共用这条进度条，别把它挂到这上面。
+let _syncPollTimer = null;
+function startSyncPolling() {
+  if (_syncPollTimer) return;
+  _syncPollTimer = setInterval(async () => {
+    let d;
+    try { d = await (await fetch("/api/sync/state")).json(); }
+    catch (e) { return; }                       // 服务暂时不可达：下个周期再试
+    if (d.running) onSyncProgress(d);
+    else if (d.done) { stopSyncPolling(); onSyncProgress(d); }
+  }, 2000);
+}
+function stopSyncPolling() {
+  if (_syncPollTimer) { clearInterval(_syncPollTimer); _syncPollTimer = null; }
+}
+
+/** 同步进度（WebSocket 的 sync_progress 驱动，轮询兜底） */
+let _lastFinishAt = 0;
 function onSyncProgress(p) {
   if (!p.running && p.done) {
+    // 完成时刻后端会连发三帧（sync_history 收尾、synced 结果、_bg 收尾），
+    // 文案每次都更新，但刷新视图这类副作用 5 秒窗口内只做一次——
+    // 否则一次全量同步结束会连打 3 对 /api/messages（主列表 + 老师列）。
     document.getElementById("syncText").textContent = p.detail || "同步完成";
     document.getElementById("syncFill").style.width = "100%";
+    if (Date.now() - _lastFinishAt < 5000) return;
+    _lastFinishAt = Date.now();
     setTimeout(hideSyncBar, 4000);
     // 你已经滚上去在翻历史时不要重载当前视图 —— 重载会重新渲染并按「切换视图」
     // 的规则贴到底，看起来就是“过一会儿又自己跳到底了”。新消息本来就会由 IM 推过来。
@@ -1608,7 +1642,7 @@ async function showStats() {
   document.getElementById("statsKv").innerHTML = `
     <div><b>总消息</b>${d.total} 条</div>
     <div><b>老师消息</b>${d.teacher} 条</div>
-    <div><b>图片</b>${d.images} 条</div>
+    <div><b>图片</b>${d.images} 张</div>
     <div><b>发言用户</b>${d.users} 人</div>
     <div><b>时间跨度</b>${d.first || "-"} ~ ${d.last || "-"}</div>${tokRow}${syncRow}${mediaRow}`;
   document.getElementById("statsTable").innerHTML = (d.days || [])

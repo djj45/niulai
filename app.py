@@ -776,6 +776,9 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
                        fetched=0, added=0, oldest="", newest="", done=False,
                        detail="全量同步中…" if full else "同步最新中…")
     _sync_progress()
+    mode = "全量" if full else "增量"
+    print(f"[同步] {time.strftime('%H:%M:%S')} {mode}开始 room={room_id} page_size={page_size}",
+          flush=True)
 
     added_total = fetched = 0
     cursor = ""
@@ -796,6 +799,8 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
             except AuthExpired:
                 _sync_state.update(detail="登录失效，请更新 centraltoken", auth_failed=True,
                                    next_try=time.time() + 600, running=False, done=True)
+                print(f"[同步] {time.strftime('%H:%M:%S')} {mode}中止：登录失效（centraltoken 过期）",
+                      flush=True)
                 _on_token_expired()
                 return {"error": "登录失效，请更新 centraltoken"}
             except NiuLaiError as e:
@@ -807,6 +812,8 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
         if items is None:
             error = last_err or "请求失败"
             _sync_state.update(detail=f"失败：{error}", running=False, done=True)
+            print(f"[同步] {time.strftime('%H:%M:%S')} {mode}失败（第 {i + 1} 次请求）：{error}",
+                  flush=True)
             return {"error": error}
         if not items:
             _sync_state["detail"] = f"已到最早（共 {fetched} 条）"
@@ -821,10 +828,13 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
         # 说明已经追上（边界就在本页），更旧的页必然全是已有的 —— 不必再白跑一页。
         # 以前写的是 i > 1，于是每轮固定浪费 1 个请求。真正的补空档交给「全量同步」。
         known = _known_ids(room_id, items)
+        added_before = added_total
         if stop_at_known and not full and known:
             added_total += ingest(room_id, [x for x in items
                                             if int(x.get("id") or 0) not in known], "rest")
             _sync_state["detail"] = "已追上"
+            print(f"[同步] {time.strftime('%H:%M:%S')} 增量 第{i}页 追上（本页新增 {added_total - added_before} 条，"
+                  f"本页 {int((time.time() - t0) * 1000)}ms）", flush=True)
             break
         added_total += ingest(room_id, items, "rest")
 
@@ -834,6 +844,9 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
                            oldest=oldest, newest=newest, last_page_ms=int((time.time() - t0) * 1000),
                            detail=f"已取 {fetched} 条（+{added_total}），最早到 {oldest}")
         _sync_progress()
+        print(f"[同步] {time.strftime('%H:%M:%S')} {mode} 第{i}页 取{len(items)}条 新增{added_total - added_before}条"
+              f" 累计{fetched}条(+{added_total}) 最早到{oldest or '?'}"
+              f" 本页{int((time.time() - t0) * 1000)}ms", flush=True)
 
         cursor = str(items[-1].get("id") or "")
         with _db_lock:
@@ -858,6 +871,8 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
                        detail=(_sync_state["detail"] if error
                                else f"{head} · {i} 次请求，新增 {added_total} 条"))
     _sync_progress()
+    print(f"[同步] {time.strftime('%H:%M:%S')} {mode}完成：{head}（{i} 次请求，取回 {fetched} 条，新增 {added_total} 条）",
+          flush=True)
     return {"added": added_total, "fetched": fetched, "pages": _sync_state["pages"],
             "oldest": _sync_state["oldest"]}
 
@@ -914,11 +929,12 @@ def _sync_worker():
         c = cfg()
         if not c.get("centraltoken") or not c.get("room_id"):
             continue
-        if _sync_state["running"]:
-            continue
         if _sync_state["auth_failed"] and time.time() < _sync_state["next_try"]:
             continue
-        _sync_state["running"] = True
+        with _sync_claim_lock:               # 和 /api/sync 同一把锁，避免双开
+            if _sync_state["running"]:
+                continue
+            _sync_state["running"] = True
         try:
             r = sync_history(pages=2)        # 追上就停在第 1 页，见 sync_history 的 stop_at_known
             if r.get("added"):
@@ -1301,6 +1317,11 @@ async def api_user(user_id: int):
         return jsonify(db.get_user_profile(conn, user_id))
 
 
+# 同步启动的原子占位：两个 POST 在几十毫秒内同时到达时都读到 running=False，
+# 会双开同步线程重复拉同样的页 —— 检查+占位必须在同一把锁里完成。
+_sync_claim_lock = threading.Lock()
+
+
 @app.route("/api/sync", methods=["POST"])
 async def api_sync():
     """同步历史。
@@ -1326,11 +1347,12 @@ async def api_sync():
     # 已确认失效且还在退避窗口内 → 直接告错，不浪费一次请求
     if _sync_state["auth_failed"] and time.time() < _sync_state["next_try"]:
         return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
-    if _sync_state["running"]:
-        return jsonify({"error": "已有一个同步任务在跑，稍等", "state": dict(_sync_state)}), 409
+    with _sync_claim_lock:
+        if _sync_state["running"]:
+            return jsonify({"error": "已有一个同步任务在跑，稍等", "state": dict(_sync_state)}), 409
+        _sync_state["running"] = True          # 先占位再开线程，并发点击不会双开
 
     def _bg():
-        _sync_state["running"] = True
         try:
             r = sync_history(pages=pages, source_type=source, full=full,
                              page_size=page_size, max_messages=max_messages,
@@ -1344,8 +1366,19 @@ async def api_sync():
             _sync_state["running"] = False
             _sync_progress()
 
-    threading.Thread(target=_bg, daemon=True).start()
+    t = threading.Thread(target=_bg, daemon=True)
+    try:
+        t.start()
+    except Exception:                       # 线程都起不来：释放占位，别把同步永久锁死
+        _sync_state["running"] = False
+        raise
     return jsonify({"status": "started", "pages": pages})
+
+
+@app.route("/api/sync/state")
+async def api_sync_state():
+    """同步进度快照（不碰数据库）。WS 断连时前端靠轮询它保住进度显示。"""
+    return jsonify(dict(_sync_state))
 
 
 @app.route("/api/send", methods=["POST"])
