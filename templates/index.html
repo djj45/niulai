@@ -1256,8 +1256,10 @@ function connectWS() {
     else if (d.type === "status") { updateImStatus(d); }
     else if (d.type === "synced") {
       if (d.error) console.warn("同步失败：" + d.error);
-      else onSyncProgress({ running: false, done: true,
-                            detail: `完成：${d.pages || 0} 次请求 ${d.fetched || 0} 条，新增 ${d.added || 0} 条` });
+      else onSyncProgress({ running: false, done: true, added: d.added || 0,
+                            detail: d.pages != null
+                              ? `完成：${d.pages || 0} 次请求 ${d.fetched || 0} 条，新增 ${d.added || 0} 条`
+                              : `已补拉 ${d.added || 0} 条` });
     }
     else if (d.type === "sync_progress") { onSyncProgress(d); }
     else if (d.type === "media_progress") { onMediaProgress(d); }
@@ -1528,11 +1530,13 @@ function stopSyncPolling() {
 let _lastFinishAt = 0;
 function onSyncProgress(p) {
   if (!p.running && p.done) {
-    // 完成时刻后端会连发三帧（sync_history 收尾、synced 结果、_bg 收尾），
-    // 文案每次都更新，但刷新视图这类副作用 5 秒窗口内只做一次——
-    // 否则一次全量同步结束会连打 3 对 /api/messages（主列表 + 老师列）。
     document.getElementById("syncText").textContent = p.detail || "同步完成";
     document.getElementById("syncFill").style.width = "100%";
+    // 没有新增就到此为止：后台核对每 30~300 秒收尾、IM 重连补漏收尾都会广播
+    // 一次"完成"，为 0 条新增整页重渲染（老师栏滚动被重置——"抽搐"的来源）。
+    if (!(p.added > 0)) { setTimeout(hideSyncBar, 4000); return; }
+    // 有新增时，完成时刻后端会连发多帧（sync_history 收尾、synced 结果、_bg 收尾），
+    // 刷新视图这类副作用 5 秒窗口内只做一次——否则连打 3 对 /api/messages。
     if (Date.now() - _lastFinishAt < 5000) return;
     _lastFinishAt = Date.now();
     setTimeout(hideSyncBar, 4000);
