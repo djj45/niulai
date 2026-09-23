@@ -181,7 +181,8 @@ def login_by_password(account: str, password: str, captcha_verify_param: str,
         raise NiuLaiError("缺少 captchaVerifyParam（先过滑块，或直接粘贴票据）")
     body = password_login_params(account, password, captcha_verify_param, scene_id)
     r = requests.post(PWD_LOGIN_URL, data=body,
-                      headers={"user-agent": UA, "referer": REFERER}, timeout=DEFAULT_TIMEOUT)
+                      headers={"user-agent": UA, "referer": REFERER}, timeout=DEFAULT_TIMEOUT,
+                      proxies={"http": None, "https": None})   # 国内服务直连，不吃环境代理
     try:
         j = r.json()
     except ValueError:
@@ -322,6 +323,9 @@ class TouguClient:
         self.central_token = central_token or ""
         self.timeout = timeout
         self.session = requests.Session()
+        # 约牛是国内服务，别跟着 shell 里的 http(s)_proxy 走——
+        # 抓包用的 sing-box(127.0.0.1:20122) 一关，同步/IM 全线 ConnectionRefused
+        self.session.trust_env = False
         self.on_token_expired = on_token_expired
 
     # ---------- 基础请求 ----------
@@ -477,7 +481,8 @@ def probe_room(central_token: str, teacher_id: int = 328) -> dict:
 
 
 def download_media(url: str, timeout: int = 30) -> bytes:
-    """下载图片/头像（CDN 无鉴权）。"""
-    r = requests.get(url, headers={"user-agent": UA, "referer": REFERER}, timeout=timeout)
+    """下载图片/头像（CDN 无鉴权）。同 TouguClient：不吃环境代理，直连。"""
+    r = requests.get(url, headers={"user-agent": UA, "referer": REFERER},
+                     timeout=timeout, proxies={"http": None, "https": None})
     r.raise_for_status()
     return r.content

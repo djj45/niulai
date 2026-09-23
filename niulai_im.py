@@ -305,6 +305,7 @@ class TencentImClient:
             url, origin=f"https://{self.sdk_app_id}{self.host_suffix}.my-imcloud.com",
             additional_headers={"User-Agent": UA, "content-type": "application/json"},
             max_size=MAX_FRAME, open_timeout=CONNECT_TIMEOUT, ping_interval=None,
+            proxy=None,      # 直连：不吃环境代理，sing-box 关了也不影响收消息
         ) as ws:
             self._ws = ws
             self.logged_in = False
