@@ -1500,10 +1500,10 @@ async def api_search():
     room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
     size = min(int(request.args.get("size") or 300), 2000)
     with _db_lock:
-        msgs = db.search_messages(conn, keyword or "", room_id or None, user_id=user_id,
-                                  start_date=request.args.get("start_date", ""),
-                                  end_date=request.args.get("end_date", ""), size=size)
-    return jsonify({"total": len(msgs), "messages": msgs})
+        msgs, total = db.search_messages(conn, keyword or "", room_id or None, user_id=user_id,
+                                         start_date=request.args.get("start_date", ""),
+                                         end_date=request.args.get("end_date", ""), size=size)
+    return jsonify({"total": total, "messages": msgs, "truncated": total > len(msgs)})
 
 
 @app.route("/api/stats")

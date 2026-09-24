@@ -1274,6 +1274,7 @@ async function doSearch() {
   const uid = document.getElementById("userIdInput").value.trim();
   if (!kw && !uid) { clearSearch(); return; }
   const url = new URL("/api/messages/search", location.origin);
+  url.searchParams.set("size", 2000);   // 取最新 2000 条（命中更多时提示截断）
   if (kw) url.searchParams.set("keyword", kw);
   if (uid) url.searchParams.set("user_id", uid);
   const s = parseRange(document.getElementById("searchStart").value);
@@ -1286,7 +1287,8 @@ async function doSearch() {
   searchMode = true;
   searchKeyword = kw;
   renderMessages(d.messages || [], document.getElementById("allList"), kw);
-  document.getElementById("allCount").textContent = "搜索命中 " + (d.total || 0) + " 条";
+  document.getElementById("allCount").textContent =
+    `搜索命中 ${d.total || 0} 条` + (d.truncated ? `（显示最新 ${(d.messages || []).length} 条，可加日期范围缩小）` : "");
   document.getElementById("clearBtn").classList.add("show");
 }
 

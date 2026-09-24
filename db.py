@@ -641,7 +641,10 @@ def query_messages(conn, room_id: int | None = None, date: str = "", start_ts: i
 
 
 def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int = 0,
-                    start_date: str = "", end_date: str = "", size: int = 300) -> list:
+                    start_date: str = "", end_date: str = "", size: int = 300):
+    """返回 (rows, total)：rows 是命中的**最新 size 条**（时间正序展示），
+    total 是不带 LIMIT 的真实命中数。以前 ORDER BY ts ASC 直接 LIMIT——
+    命中一多只能看到最旧的几页（实测「大金」577 条只显示到 09-17）。"""
     # 前端把日期传成 20260920（parseRange 去掉了横线），库里 msg_date 是
     # 2026-09-20 08:11:23 —— 不归一的话字符串比较里 '-'<'0'，全部消息都被滤掉，
     # 表现就是「带日期的搜索永远暂无消息」。这里两种输入都接受。
@@ -650,23 +653,25 @@ def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int
         return f"{d8[:4]}-{d8[4:6]}-{d8[6:8]}" if len(d8) == 8 else ""
 
     sd, ed = _d(start_date), _d(end_date)
-    sql = "SELECT * FROM messages WHERE msg_content LIKE ?"
+    where = " WHERE msg_content LIKE ?"
     params: list = [f"%{keyword}%"]
     if room_id:
-        sql += " AND room_id=?"
+        where += " AND room_id=?"
         params.append(room_id)
     if user_id:
-        sql += " AND user_id=?"
+        where += " AND user_id=?"
         params.append(user_id)
     if sd:
-        sql += " AND msg_date>=?"
+        where += " AND msg_date>=?"
         params.append(sd + " 00:00:00")
     if ed:
-        sql += " AND msg_date<=?"
+        where += " AND msg_date<=?"
         params.append(ed + " 23:59:59")
-    sql += " ORDER BY ts ASC LIMIT ?"
-    params.append(size)
-    return [_msg_to_dict(r) for r in conn.execute(sql, params).fetchall()]
+    total = conn.execute("SELECT COUNT(*) FROM messages" + where, params).fetchone()[0]
+    rows = conn.execute("SELECT * FROM messages" + where
+                        + " ORDER BY ts DESC LIMIT ?", params + [size]).fetchall()
+    rows.reverse()                      # 取的是最新 N 条，展示仍按时间正序
+    return [_msg_to_dict(r) for r in rows], total
 
 
 # ===================== 研选文章（本地缓存） =====================
