@@ -925,6 +925,9 @@ function renderMsg(m, frag, kw) {
 }
 
 function renderMessages(msgs, list, kw, followBottom) {
+  // 悬停中的昵称元素马上要被重渲染移除，mouseleave 不会再触发——
+  // 曾用名弹窗会一直卡在屏上，直到你再次悬停某个昵称。这里统一关掉。
+  hideNickInfo();
   const key = list.id;
   const old = _renderStates.get(key);
   if (old && old.observer) { old.observer.disconnect(); _renderStates.delete(key); }
