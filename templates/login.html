@@ -65,63 +65,62 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>账号密码登录（<span style="color:var(--err)">已验证走不通</span>）</h1>
-  <div class="sub">保留本页仅作逆向记录与“手里已有票据”时的备用入口。</div>
+  <h1>登录（微信扫码 / 账号密码）</h1>
+  <div class="sub">2026-09-24 起两条路都通：扫码免验证码最省事；账密过一次阿里云滑块
+    （网页版同款组件，sceneId <code>17n9bhbp</code>）。扫过码后本页可以关掉。</div>
 
-  <div class="verdict">
-    <h2>⛔ 这条路已实测放弃，不是配置问题，是值不存在</h2>
-    <p>
-      账密登录必须带 <code>captchaVerifyParam</code>（阿里云验证码票据），而它只能由
-      阿里客户端组件产生。小程序插件好用，但想换成浏览器 Web SDK 就差一个
-      <b>prefix</b> —— 实测它会被拼进请求域名当 <b>userTag</b> 校验：
-    </p>
-    <table>
-      <tr><th>prefix</th><th>实际请求主机</th><th>阿里云答复</th></tr>
-      <tr><td><code>"nl"</code>（编的）</td><td><code>nl.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
-      <tr><td>不发送</td><td><code>undefined.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
-    </table>
-    <p>
-      不带 prefix 时 SDK 直接把 <code>undefined</code> 拼进域名 → 这个 SDK 里 prefix 是**强制**的。
-      而正确的 prefix 是**约牛在阿里云控制台配 Web 接入时生成**的：
-      他们的小程序插件声明里没有 prefix，5 个网页站也查不到任何验证码痕迹
-      → 他们压根没配过 Web 接入，这个值不存在（不是藏起来了）。<br>
-      另外小程序插件的票据是 <code>Base64({certifyId,sceneId,isSign,securityToken})</code>，
-      而 Web SDK 给的是 <code>{sceneId,certifyId,deviceToken,failover}</code>，形状也对不上。
-    </p>
+  <div class="card" id="qrCard">
+    <div class="field">
+      <label>teacherId（老师 ID，默认 328）</label>
+      <input type="text" id="qrTeacher" value="328">
+    </div>
+    <button id="qrBtn" onclick="startQrLogin()">生成二维码</button>
+    <span class="tag">不用验证码 · 二维码约 2 分钟有效</span>
+    <div id="qrBox" style="display:none;text-align:center;margin-top:14px">
+      <img id="qrImg" alt="登录二维码" style="width:260px;border:1px solid var(--border);
+        border-radius:8px;background:#fff;padding:8px">
+      <div id="qrStatus" style="margin-top:10px;color:var(--muted)">等待微信扫码…</div>
+      <div style="font-size:12px;color:var(--muted);margin-top:4px">
+        微信扫一扫 → 确认登录；过期点「生成二维码」重开一张
+      </div>
+    </div>
   </div>
 
-  <div class="next">
-    <b>真正该用的：一条命令抓现成 token</b>（已实测可用，不用记 networksetup）
-    <pre>tools/proxy_capture.sh on
-# 小程序窗口彻底关掉重开 → 进任意老师聊天室 → 终端出现 ✅
-tools/proxy_capture.sh off</pre>
-  </div>
-
-  <details class="fold">
-    <summary>▸ 仍想手动试？下面保留完整链路（只在你已从别处拿到 captchaVerifyParam 时才有用）</summary>
-    <br>
-    <div class="sub">
-      账密用小程序里硬编码的 DES 密钥本地加密，登录一次直接拿到 <b>centraltoken</b>，
-      并自动刷 IM 凭证。
+  <div class="card" id="pwdCard">
+    <div class="sub" style="margin:0 0 10px">
+      <b>账号密码登录</b>——网页版同款阿里云滑块，过完滑块自动登录；
+      滑块起不来时（域名白名单等）直接用上面的微信扫码。
     </div>
 
-  <div class="card">
     <div class="field">
-      <label>账号（手机号 / 约牛号）</label>
-      <input type="text" id="account" autocomplete="username" placeholder="13800000000">
+      <label>历史账号（存在本机 .env，可多账户）
+        <button class="ghost tiny" id="delSavedBtn" style="display:none"
+                onclick="deleteSavedLogin()">删除选中</button>
+      </label>
+      <select id="savedSelect" onchange="pickSavedLogin()">
+        <option value="">— 选择已存账号自动填充 —</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>账号</label>
+      <input type="text" id="account" autocomplete="username" placeholder="请输入账号">
     </div>
     <div class="field">
       <label>密码</label>
-      <input type="password" id="password" autocomplete="current-password" placeholder="••••••••">
+      <input type="password" id="password" autocomplete="current-password" placeholder="请输入密码">
+    </div>
+    <div class="field">
+      <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+        <input type="checkbox" id="savePwd" checked>
+        保存密码到本机 .env（不勾则只记账号）
+      </label>
     </div>
     <div class="field">
       <label>验证码<span class="tag" id="sceneTag"></span></label>
       <div id="captcha-box"></div>
-      <textarea id="paramBox" placeholder="captchaVerifyParam（过完滑块会自动填在这里；也可以从别处粘进来直接登录）"></textarea>
     </div>
     <div class="row">
       <button id="submitBtn" onclick="manualSubmit()">登录并写入 centraltoken</button>
-      <button class="ghost" onclick="usePastedParam()">用粘贴的票据直接登录</button>
     </div>
     <div class="msg" id="msg"></div>
     <div class="diag-head" id="diagHead">
@@ -130,40 +129,112 @@ tools/proxy_capture.sh off</pre>
     </div>
     <pre class="diag" id="diag"></pre>
   </div>
-  </details>
 
   <div class="card hint">
     <b>说明</b><br>
-    · 账号密码只在本机加密后直接发给 <code>account.zx093.cn</code>，不经过任何第三方；不会落盘。<br>
-    · 滑块是阿里云验证码，**sceneId** 取自小程序源码里的常量
-      （构建期写死，运行时不会变；但约牛发新版本换场景时会变）。
-      本页显示的当前值来源写在标签的 tooltip 上。
-      <code>tools/capture_login.py</code> 抓到真实登录流量时会**自动把新的 sceneId 写回**，
-      所以真变了你不用手改。<br>
-    · <b>Web 接入还缺一个 prefix</b>：实测 SDK 会把它拼进请求域名
-      （<code>https://&lt;prefix&gt;.captcha-open.aliyuncs.com</code>）当 <b>userTag</b> 校验，
-      乱写会得 <code>IllegalUserTag</code>。它是阿里云控制台配 Web 接入时生成的，
-      而约牛只配了小程序插件（插件声明里没有 prefix），所以**我们手上没有**。
-      默认不发 prefix；要试其它值就在地址后加 <code>?prefix=xxx</code>。<br>
-    · 票据（<code>captchaVerifyParam</code>）<b>一次性且短时效</b>，所以重放无用——
-      每次登录都得重新过一遍。<br>
-    · 只想拿 token 的话更省事：用 <code>tools/capture_token.py</code> 抓现成的，不必走这条。
+    · 账号密码只在本机加密（DES，密钥取自约牛客户端源码）后直接发给
+      <code>account.zx093.cn</code>，不经过任何第三方；不会落盘。<br>
+    · 滑块是阿里云验证码，sceneId 用网页版线上值 <code>17n9bhbp</code>
+      （抓包工具抓到新值会自动写回设置）。<br>
+    · 票据（<code>captchaVerifyParam</code>）<b>一次性且短时效</b>，过完滑块自动登录，不需要人工填；
+      滑块反复起不来就用上方微信扫码（免验证码）。<br>
+    · 微信扫码不用任何验证码，二维码约 2 分钟有效。
   </div>
+
+  <details class="fold">
+  <summary>▸ 历史记录：小程序时代「Web 验证码 prefix 不存在」的实测结论与抓包取 token</summary>
+  <br>
+  <div class="verdict">
+    <h2>⛔ 当年（2026-09-22 前）的结论：Web 验证卡在 prefix</h2>
+    <p>
+      小程序插件好用，但当年想换成浏览器 Web SDK 就差一个 <b>prefix</b>——
+      实测它会被拼进请求域名当 <b>userTag</b> 校验：
+    </p>
+    <table>
+      <tr><th>prefix</th><th>实际请求主机</th><th>阿里云答复</th></tr>
+      <tr><td><code>"nl"</code>（编的）</td><td><code>nl.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
+      <tr><td>不发送</td><td><code>undefined.captcha-open.aliyuncs.com</code></td><td><code>IllegalUserTag</code></td></tr>
+    </table>
+    <p>
+      2026-09-24 网页版上线后此结论过时：官方 webChatRoom 直接
+      <code>initAliyunCaptcha({SceneId, mode:"embed", …})</code>，无 prefix，
+      线上场景 <code>17n9bhbp</code>——本页已照抄同款初始化。
+    </p>
+  </div>
+  <div class="next">
+    <b>另一条抓现成 token 的路</b>（不用登录界面）
+    <pre>tools/proxy_capture.sh on
+# 小程序窗口彻底关掉重开 → 进任意老师聊天室 → 终端出现 ✅
+tools/proxy_capture.sh off</pre>
+  </div>
+  </details>
 </div>
 
 <script>
-// 阿里云 Web 接入的 prefix 会被**拼进域名**并当 userTag 校验：
-//   实测 prefix="nl" → 请求 https://nl.captcha-open.aliyuncs.com/
-//                        → {"Code":"IllegalUserTag"} → init 失败
-// 也就是说 prefix 不是随便起的，它得是**阿里云控制台配 Web 接入时生成的**。
-// 而约牛的小程序插件声明里根本没有 prefix（他们没配 Web），所以我们拿不到。
-// 先试空的（SDK 默认 prefix = ""，可能落到不带子域的端点）；
-// 想试其它值就在地址后面加 ?prefix=xxx
-const _q = new URLSearchParams(location.search);
-const NL_PREFIX = _q.has("prefix") ? (_q.get("prefix") || "") : "";
-window.NL_PREFIX = NL_PREFIX;
-window.AliyunCaptchaConfig = NL_PREFIX ? { region: "cn", prefix: NL_PREFIX }
-                                     : { region: "cn" };
+// ===================== 微信扫码登录 =====================
+let qrTimer = null, qrStart = 0, qrToken = "", qrTeacher = 328;
+const $$ = id => document.getElementById(id);
+
+async function startQrLogin() {
+  stopQrPoll();
+  qrTeacher = parseInt($$("qrTeacher").value) || 328;
+  $$("qrBtn").disabled = true;
+  $$("qrStatus").style.color = "";
+  $$("qrStatus").textContent = "生成二维码中…";
+  $$("qrBox").style.display = "block";
+  try {
+    const r = await fetch("/api/login/qrcode", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ teacher_id: qrTeacher })
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    qrToken = d.auth_token;
+    $$("qrImg").src = "data:image/jpeg;base64," + d.qrcode;
+    $$("qrStatus").textContent = "等待微信扫码…";
+    qrStart = Date.now();
+    qrTimer = setInterval(pollQr, 2500);
+  } catch (e) {
+    $$("qrStatus").textContent = "生成失败：" + e.message;
+  }
+  $$("qrBtn").disabled = false;
+}
+
+async function pollQr() {
+  if (Date.now() - qrStart > 150000) {          // 与服务端二维码时效对齐（约 2 分钟）
+    $$("qrStatus").textContent = "⌛ 二维码已过期，点「生成二维码」重开一张";
+    stopQrPoll();
+    return;
+  }
+  let d;
+  try {
+    const r = await fetch("/api/login/qrcode/poll", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ auth_token: qrToken, teacher_id: qrTeacher })
+    });
+    d = await r.json();
+  } catch (e) { return; }                       // 网络抖动：下个周期再试
+  if (d.status === "waiting") return;
+  if (d.status === "error") return;              // 与官方网页一致：瞬时错误继续轮询
+  stopQrPoll();
+  if (d.status === "ok") {
+    const u = (d.user && (d.user.nickName || d.user.userId)) || "";
+    $$("qrStatus").style.color = "#2e7d32";
+    $$("qrStatus").innerHTML =
+      `✅ 登录成功：${u} · 房间「${d.room || "?"}」已就绪，正在跳转…`;
+    setTimeout(() => location.href = "/", 1200);   // 扫码成功自动回主页
+  } else {
+    // expired：二维码过期，停止轮询等用户重新生成
+    $$("qrStatus").textContent = d.error || "二维码已过期，请重新生成";
+  }
+}
+function stopQrPoll() { if (qrTimer) { clearInterval(qrTimer); qrTimer = null; } }
+window.addEventListener("load", () => startQrLogin());   // 打开页面直接出二维码，不用点按钮
+</script>
+<script>
+// 网页版（account.zx093.cn 登录页）同款初始化：initAliyunCaptcha({SceneId, prefix:"v98goc", mode:"embed"})。
+// prefix 来自 2026-09-24 官方登录抓包（请求主机 v98goc.captcha-open.aliyuncs.com）——
+// 之前「官方不传 prefix」的结论是错的：不传时 SDK 拼出 undefined.captcha-open…，直接 Network Error。
 
 // ===================== 诊断采集（必须在 SDK 之前装上） =====================
 // 组件起不来时，onError 往往只给一个 code、msg 是空的（实测如此），
@@ -233,6 +304,7 @@ const SCENE_FROM = "{{ scene_from }}";
 window.__SCENE_ID = SCENE_ID;
 window.__SCENE_FROM = SCENE_FROM;
 let captchaInstance = null;
+let captchaParam = "";              // 滑块出的票据只留在内存里，不显示给用户
 let sdkReady = false;
 
 /** 把错误对象的每一层都展开，尤其是 err.msg —— 真正原因都在那里 */
@@ -268,6 +340,62 @@ if (SCENE_FROM) {
 /** 正在跑的真实登录流程（避免重复触发） */
 let loginInFlight = false;
 
+// ===================== 已存账号（.env，多账户） =====================
+let _savedLogins = [];
+async function loadSavedLogins(auto = false) {
+  try {
+    const d = await (await fetch("/api/login/saved")).json();
+    _savedLogins = d.logins || [];
+  } catch (e) { _savedLogins = []; }
+  _savedLogins.sort((a, b) => (b.used_at || 0) - (a.used_at || 0));   // 最近登录的排前面
+  const sel = $("savedSelect");
+  sel.innerHTML = '<option value="">— 选择已存账号自动填充 —</option>'
+    + _savedLogins.map(l =>
+        `<option value="${esc(l.account)}">${esc(l.account)}${l.password ? "（有密码）" : ""}</option>`).join("");
+  $("delSavedBtn").style.display = _savedLogins.length ? "" : "none";
+  // 页面初次加载时默认选中最新登录过的账号并自动填充，不用每次手选
+  if (auto && _savedLogins.length) {
+    sel.value = _savedLogins[0].account;
+    $("account").value = _savedLogins[0].account;
+    $("password").value = _savedLogins[0].password || "";
+  }
+}
+function pickSavedLogin() {
+  const v = $("savedSelect").value;
+  const it = _savedLogins.find(l => l.account === v);
+  if (!it) return;
+  $("account").value = it.account;
+  $("password").value = it.password || "";
+  $("password").focus();
+}
+async function saveLogin(account, password) {
+  try {
+    const d = await (await fetch("/api/login/saved", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account, password,
+        save_password: $("savePwd").checked })
+    })).json();
+    if (d.saved_password) dline("已存账号:", account + "（含密码）");
+    else dline("已存账号:", account + "（未存密码）");
+  } catch (e) { dline("存账号失败:", String(e)); }
+  loadSavedLogins();
+}
+async function deleteSavedLogin() {
+  const v = $("savedSelect").value;
+  if (!v) { say("先在下拉里选中要删的账号", "err"); return; }
+  await fetch("/api/login/saved", {
+    method: "DELETE", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ account: v })
+  });
+  say("已删除账号 " + v);
+  loadSavedLogins();
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+loadSavedLogins(true);
+
 /** 真正干活：拿票据 + 账密去登录 */
 async function doLogin(param) {
   const account = $("account").value.trim();
@@ -284,9 +412,11 @@ async function doLogin(param) {
     const d = await r.json();
     if (d.error) { say("❌ " + d.error, "err"); return false; }
     const im = d.im ? `sdkAppId=${d.im.sdkAppId}` : (d.im_error ? "IM 凭证获取失败：" + d.im_error : "");
+    await saveLogin(account, password);      // 账号总是记，密码按勾选
     say(`✅ 登录成功，已写入 centraltoken（${d.token_prefix} 共 ${d.token_len} 字符）\n`
       + `房间 #${d.room.id} ${d.room.name || ""} · 老师 ${d.room.teacher || "-"}\n`
-      + `IM ${d.im_ready ? "已就绪" : "未就绪"} ${im}\n\n可以关掉本页，回到聊天室界面了。`, "ok");
+      + `IM ${d.im_ready ? "已就绪" : "未就绪"} ${im}\n\n正在跳转…`, "ok");
+    setTimeout(() => location.href = "/", 1500);   // 和扫码登录一样：成功自动回主页
     return true;
   } catch (e) {
     say("❌ 请求失败：" + e, "err");
@@ -297,30 +427,29 @@ async function doLogin(param) {
 }
 
 /**
- * 阿里云验证码通过后的回调。
- * 注意：**初始化失败时 SDK 也会调到这里**，参数是失败上报对象
- *   {"sceneId":..,"certifyId":..,"failover":"T","err":{"code":"INIT_FAIL",...}}
- * 这种情况不能拿去登录（那是无效票据），要把原因展示出来。
+ * embed 模式的 success 回调（网页版同款签名）：拿到 captchaVerifyParam 直接登录。
+ * 兼容字符串 / {captchaVerifyParam} 对象；失败上报对象（含 err）不算票据。
  */
-async function captchaVerifyCallback(captchaVerifyParam) {
-  $("paramBox").value = captchaVerifyParam;
-  dline("captchaVerifyCallback:", String(captchaVerifyParam).slice(0, 300));
-
+async function onCaptchaSuccess(e) {
+  let param = typeof e === "string" ? e
+            : (e && typeof e === "object") ? (e.captchaVerifyParam || "") : "";
   let obj = null;
-  try { obj = JSON.parse(captchaVerifyParam); } catch (e) { obj = null; }
-  if (obj && obj.err) {
+  try { obj = typeof e === "string" ? JSON.parse(e) : e; } catch (err) { obj = null; }
+  if (!param && obj && obj.err) {
     const detail = explain(obj.err);
     dline("票据无效（含 err）:", detail || JSON.stringify(obj.err));
-    say("❌ 没拿到可用票据 —— SDK 交上来的是**失败上报对象**：\n\n"
-      + (detail || JSON.stringify(obj.err))
-      + "\n\n完整上报对象：\n" + JSON.stringify(obj)
-      + "\n\n（原因看下方诊断面板）", "err");
-    return { captchaResult: true, bizResult: false };
+    say("❌ 滑块没出有效票据（" + (detail || "?") + "）\n"
+      + "可以再点「登录」重试一次；反复失败就用上面的微信扫码登录。", "err");
+    return;
   }
-  const ok = await doLogin(captchaVerifyParam);
-  return { captchaResult: true, bizResult: !!ok };
+  if (!param) {
+    say("❌ 没拿到可用票据（success 回调形状：" + j(e).slice(0, 160) + "）", "err");
+    return;
+  }
+  captchaParam = param;
+  dline("captcha success:", param.slice(0, 200));
+  await doLogin(param);
 }
-function onBizResultCallback(ok) { if (!ok) say("验证码未通过（详情见上）", "err"); }
 function getInstance(inst) { captchaInstance = inst; }
 
 /** SDK 内部错误会走这里。注意 msg 可能为空（实测就是），所以同时提示看诊断面板 */
@@ -334,27 +463,14 @@ function onCaptchaError(e) {
     + "（大概率为场景只配了小程序接入 / 域名未白名单，那就直接用 tools/proxy_capture.sh on）", "err");
 }
 
-/** 兜底：不触发滑块，直接用文本框里粘贴的票据登录 */
-function usePastedParam() {
-  const p = $("paramBox").value.trim();
-  if (!p) { say("先粘贴 captchaVerifyParam", "err"); return; }
-  // 防止把失败上报对象当票据提交
-  try {
-    const o = JSON.parse(p);
-    if (o && o.err) { say("这个不是有效票据，是失败上报对象（含 err）。\n" + explain(o.err), "err"); return; }
-  } catch (e) { /* 不是 JSON 就按原样提交 */ }
-  doLogin(p);
-}
-
 /** 按钮如果没交给 SDK 接管，就自己弹一次滑块 */
 function manualSubmit() {
   if (captchaInstance && typeof captchaInstance.show === "function") {
     captchaInstance.show();
     return;
   }
-  const p = $("paramBox").value.trim();
-  if (p) { doLogin(p); return; }
-  say("验证码组件还没就绪；可以等它加载完，或粘贴票据后点右边那个按钮", "err");
+  if (captchaParam) { doLogin(captchaParam); return; }
+  say("验证码组件还没就绪，稍等一下再点；急用可先用上方微信扫码登录", "err");
 }
 
 // ===================== 等 SDK 就绪后初始化 =====================
@@ -375,41 +491,25 @@ function whenSdkReady(fn, timeoutMs = 8000) {
 }
 
 whenSdkReady(function initCaptcha() {
-  // 初始化时机记一笔：组件是**页面加载时就初始化**的（不是等你点按钮才起），
-  // 所以初始化失败会在你输入任何东西之前就报出来 —— 与账号密码无关。
-  dline("SDK 就绪:", "开始 initAliyunCaptcha（sceneId=" + SCENE_ID + "）");
+  dline("SDK 就绪:", "开始 initAliyunCaptcha（sceneId=" + SCENE_ID + "，embed 模式，网页版同款）");
   try {
-    const cfg = {
+    window.initAliyunCaptcha({
       SceneId: SCENE_ID,
-      mode: "popup",
+      prefix: "v98goc",                 // 官方登录抓包实测：请求走 v98goc.captcha-open.aliyuncs.com。
+                                        // 不传时 SDK 拼 undefined.captcha-open… → Network Error
+      mode: "embed",                     // 内嵌滑块（网页版同款），过完自动回调 success
       element: "#captcha-box",
-      button: "#submitBtn",
-      captchaVerifyCallback: captchaVerifyCallback,
-      onBizResultCallback: onBizResultCallback,
+      success: onCaptchaSuccess,
+      fail: e => onCaptchaError(e),
       getInstance: getInstance,
-      slideStyle: { width: 360, height: 40 },
+      slideStyle: { width: 313, height: 44 },
       language: "cn",
-      region: "cn",
-      immediate: false,
-      timeout: 10000,
-      autoRefresh: true,
-      onError: onCaptchaError,        // ← SDK 内部错误（INIT_FAIL 的 msg 在这里）
-      // 万一 SDK 用 prefix 去找全局回调，这里也挂一份
-      fail: e => onCaptchaError(e)
-    };
-    // prefix 留空就**不发送**（它就是阿里云的 userTag，拼进请求域名）
-    if (window.NL_PREFIX) cfg.prefix = window.NL_PREFIX;
-    dline("prefix:", window.NL_PREFIX ? window.NL_PREFIX : "（未发送）");
-    window.initAliyunCaptcha(cfg);
-    window.nlCaptchaVerifyCallback = captchaVerifyCallback;
-    window.nlOnBizResultCallback = onBizResultCallback;
-    window.nlGetInstance = getInstance;
-    window.nlCaptchaError = onCaptchaError;
-    dline("init 已调用:", "没有同步抛错，等 onError / 回调");
+    });
+    dline("init 已调用:", "embed 模式，等 success/fail 回调");
   } catch (e) {
     dline("init 抛异常:", String(e && (e.message || e)));
     say("验证码初始化异常：" + (e && (e.message || e))
-      + "\n（详细信息见下方诊断）", "err");
+      + "\n（详细信息见下方诊断；也可以去官方网页版过滑块后把票据粘进来）", "err");
   }
 });
 </script>

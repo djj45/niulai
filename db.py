@@ -588,11 +588,11 @@ def _build_filters(room_id=None, date="", start_ts=0, end_ts=0, keyword="", user
         sql += " AND user_id=?"
         params.append(user_id)
     if only_teacher:
-        sql += " AND user_type=4"
+        sql += " AND user_type IN (3,4)"
     if only_reply:
         # 老师回复了某个用户 —— 这才是真正的「回复」信号。
         # （旧的 private_message_flag 在 REST 记录里恒为 0，在 IM 推送里全是占位值）
-        sql += " AND user_type=4 AND to_user_id>0"
+        sql += " AND user_type IN (3,4) AND to_user_id>0"
     if before_id:
         sql += " AND id>0 AND id<?"
         params.append(before_id)
@@ -656,7 +656,7 @@ def stats(conn, room_id: int | None = None) -> dict:
         params = [room_id]
     total = conn.execute(f"SELECT COUNT(*) FROM messages{where}", params).fetchone()[0]
     teacher = conn.execute(
-        f"SELECT COUNT(*) FROM messages{where}{' AND' if where else ' WHERE'} user_type=4",
+        f"SELECT COUNT(*) FROM messages{where}{' AND' if where else ' WHERE'} user_type IN (3,4)",
         params).fetchone()[0]
     img = conn.execute(
         f"SELECT COUNT(*) FROM messages{where}{' AND' if where else ' WHERE'} msg_type=1",
@@ -666,7 +666,7 @@ def stats(conn, room_id: int | None = None) -> dict:
     last = conn.execute(f"SELECT MAX(msg_date) FROM messages{where}", params).fetchone()[0]
     days = conn.execute(
         f"SELECT substr(msg_date,1,10) AS day, COUNT(*) AS cnt, "
-        f"SUM(CASE WHEN user_type=4 THEN 1 ELSE 0 END) AS teacher_cnt "
+        f"SUM(CASE WHEN user_type IN (3,4) THEN 1 ELSE 0 END) AS teacher_cnt "
         f"FROM messages {'WHERE room_id=?' if room_id else ''} "
         f"GROUP BY day ORDER BY day DESC LIMIT 60", params).fetchall()
     return {

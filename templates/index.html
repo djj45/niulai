@@ -20,7 +20,9 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 /* ===== 顶部栏 ===== */
 .topbar { background: var(--card); border-bottom: 1px solid var(--border);
   padding: 8px 16px; display: flex; align-items: center; gap: 10px;
-  position: sticky; top: 0; z-index: 100; flex-wrap: wrap; }
+  position: sticky; top: 0; z-index: 100; flex-wrap: nowrap; }
+.topbar > * { flex: none; white-space: nowrap; }
+.topbar .spacer { flex: 1; }
 .topbar .title { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .topbar .room-name { color: var(--accent); font-weight: 600; max-width: 300px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -36,12 +38,13 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   border-radius: 4px; font-size: 13px; }
 .topbar .cal-group button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .topbar .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
-.topbar .token-age { font-size: 12px; color: var(--muted); cursor: help; white-space: nowrap; }
-.topbar .token-age.warn { color: #e8590c; font-weight: 600; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
-.dot.on { background: var(--me); box-shadow: 0 0 0 3px rgba(29,161,87,.15); }
+.topbar .dot { width: 9px; height: 9px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
+.dot.on { background: #0f9d58; box-shadow: 0 0 0 3px rgba(15,157,88,.15); }
 .dot.err { background: #f5222d; }
 .dot.warn { background: #faad14; }
+#imText.on { color: #0f9d58; font-weight: 600; }
+#imText.err { color: #f5222d; }
+#imText.warn { color: #d48806; }
 .warn-banner { display: none; background: #fffbe6; border-bottom: 1px solid #ffe58f;
   color: #874d00; font-size: 13px; padding: 6px 16px; }
 .warn-banner.show { display: block; }
@@ -117,7 +120,36 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .msg .content { word-break: break-word; line-height: 1.65; white-space: pre-wrap; }
 .msg .content mark { background: #fff3a0; padding: 0 1px; border-radius: 2px; }
 
-/* msgType=2 文章推送卡片 */
+/* msgType=2 文章推送卡片（视频列表也复用） */
+.vcol { padding: 3px 10px; border: 1px solid var(--border); background: var(--bg);
+  border-radius: 12px; font-size: 12px; cursor: pointer; color: var(--muted); }
+.vcol.on { border-color: var(--accent); color: var(--accent); background: rgba(29,57,196,.12); }
+/* 视频回放列表行：小缩略图 + 标题，紧凑排列 */
+.vitem { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid var(--border);
+  border-radius: 6px; cursor: pointer; background: var(--card); }
+.vitem:hover { border-color: var(--accent); }
+.vitem img { width: 96px; height: 54px; object-fit: cover; border-radius: 4px; flex: none;
+  background: #000; }
+.vbody { flex: 1; min-width: 0; }
+.vtitle { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vmeta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.vplay { flex: none; width: 30px; height: 30px; line-height: 30px; text-align: center;
+  border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; }
+/* 置顶消息条（列表头下方） */
+.pin-bar { position: relative; display: flex; align-items: center; gap: 8px; padding: 4px 10px;
+  background: rgba(232,122,50,.10); border-bottom: 1px solid var(--border); font-size: 12px; }
+.pin-badge { flex: none; cursor: pointer; font-weight: 600; }
+.pin-curr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; color: var(--muted); }
+.pin-arrow { flex: none; cursor: pointer; color: var(--muted); }
+.pin-panel { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 60;
+  background: var(--card); border: 1px solid var(--border); border-top: 0;
+  border-radius: 0 0 8px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25);
+  max-height: 40vh; overflow-y: auto; }
+.pin-item { padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+.pin-item:last-child { border-bottom: 0; }
+.pin-item:hover { background: var(--bg); }
+.pin-item .pmeta { color: var(--muted); font-size: 11px; margin-top: 2px; }
 .msg .article-card { display: inline-flex; gap: 10px; max-width: 380px; margin: 3px 0;
   padding: 8px 10px; border: 1px solid #ffd8bf; border-left: 3px solid var(--teacher);
   border-radius: 5px; background: #fffaf7; }
@@ -226,18 +258,18 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .loading { padding: 20px; text-align: center; color: var(--muted); }
 .empty { padding: 40px 20px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.9; }
 </style>
+<script src="/static/hls.min.js"></script>
 </head>
 <body>
 
 <div class="topbar">
-  <span class="title">📌 约牛聊天室</span>
+  <span class="title" title="约牛聊天室">📌 约牛</span>
   <span class="room-name" id="roomName">{{ room_id and ('#' + room_id|string) or '' }}</span>
   <span class="cal-group">
-    <span class="lbl">日期</span>
     <input type="date" id="datePicker" onchange="onDatePick()">
-    <button onclick="shiftDay(-1)" title="前一天">◀ 前一天</button>
+    <button onclick="shiftDay(-1)" title="前一天">◀</button>
     <button onclick="loadToday()" id="todayBtn">今天</button>
-    <button onclick="shiftDay(1)" title="后一天">后一天 ▶</button>
+    <button onclick="shiftDay(1)" title="后一天">▶</button>
   </span>
   <span class="sep"></span>
   <button onclick="setRange(3)" data-range="3">近3天</button>
@@ -245,13 +277,12 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <button onclick="setRange(0)" data-range="0">全部</button>
   <span class="spacer"></span>
   <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
-  <span class="token-age" id="tokenAge" style="display:none"></span>
-  <button onclick="syncMore()" id="syncMoreBtn">📥 同步最新</button>
-  <button onclick="syncFull()" id="fullSyncBtn">⏬ 全量同步</button>
-  <button onclick="syncMedia()" id="mediaBtn" title="把库里引用到的图片与头像全部下载到 data/cache/，之后断网也能翻完整历史">🖼 补齐图片</button>
-  <button onclick="openSettings()">⚙️ 鉴权/设置</button>
+  <button onclick="syncFull()" id="fullSyncBtn" title="全量同步：翻到最早">⏬ 全量</button>
+  <button onclick="showVideos()" id="videoBtn" title="老师的视频课（栏目与回放），弹窗内直接播放">📺 视频</button>
+  <button onclick="showArticles()" id="articleBtn" title="老师的全部研选文章，点击阅读">📚 文章</button>
   <button onclick="backupDB()">💾 备份</button>
   <button onclick="showStats()">📊 统计</button>
+  <button onclick="logout()" id="logoutBtn" title="清掉本机保存的登录凭证（不影响消息库），回到登录页">🚪 退出</button>
 </div>
 <div class="sync-bar" id="syncBar">
   <div class="sync-bar-inner">
@@ -304,6 +335,13 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       <span class="count" id="rangeHint"></span>
       <button class="clear-btn" id="clearBtn" onclick="clearSearch()">✕ 返回全部</button>
     </div>
+    <!-- 置顶消息（房间级，pinnedListById）：首条摘要 + 展开面板 -->
+    <div class="pin-bar" id="pinBar" style="display:none">
+      <span class="pin-badge" onclick="togglePinPanel()">📌 <b id="pinCount">0</b></span>
+      <div class="pin-curr" id="pinCurr" onclick="togglePinPanel()"></div>
+      <span class="pin-arrow" onclick="togglePinPanel()">▾</span>
+      <div class="pin-panel" id="pinPanel"></div>
+    </div>
     <div class="msg-list" id="allList">
       <div class="loading">加载中…</div>
     </div>
@@ -329,56 +367,6 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <div class="lightbox-hint">Ctrl/⌘+滚轮缩放 · 滚轮上下移动 · 拖动移动 · 双击复位 · 点击空白关闭</div>
 </div>
 
-<!-- 设置弹窗 -->
-<div class="modal" id="settingsModal" onclick="if(event.target===this)closeSettings()">
-  <div class="box">
-    <h3>⚙️ 鉴权与设置</h3>
-    <div class="hint">
-      <b>centraltoken</b>：从微信小程序抓包取得（协议文档 §2 ⑤），失效后业务接口返回
-      <code>200001</code>，需重新抓取。<br>
-      <b>userSig</b>：由 <code>chatroom/getUserSig.htm</code> 下发，腾讯云 IM 用，有效期通常 60 天，
-      有了它即使 centraltoken 过期也能继续收实时消息。<br>
-      勾选「保存后自动探测」可一次性把房间信息、IM 凭证、我的资料全部拉下来。
-    </div>
-    <div class="field">
-      <label>centraltoken</label>
-      <textarea id="setToken" placeholder="三段逗号分隔的长串（SXQd...…）"></textarea>
-      <div class="hint" style="margin-top:6px">
-        抓 token 不用手敲那一堆代理命令：<code>tools/proxy_capture.sh on</code> → 重开小程序窗口进聊天室 →
-        <code>tools/proxy_capture.sh off</code>。
-        （<a href="/login" target="_blank">账号密码登录</a>已实测走不通——缺阿里云 Web 接入的
-        prefix，页面上有完整结论）
-      </div>
-    </div>
-    <div class="field">
-      <label>teacherId（老师 ID，默认 328）</label>
-      <input type="text" id="setTeacher" placeholder="328">
-    </div>
-    <div class="field">
-      <label>userSig（可选，留空则只更新上面两项）</label>
-      <textarea id="setSig" placeholder="eJyrVgrxCdZ..."></textarea>
-    </div>
-    <div class="field">
-      <label>IM identifier（形如 cu_1234567）</label>
-      <input type="text" id="setIdent" placeholder="cu_">
-    </div>
-    <div class="field">
-      <label>IM sdkAppId</label>
-      <input type="text" id="setSdk" placeholder="1600075223">
-    </div>
-    <div class="field">
-      <label>IM 群号（imGroupId）</label>
-      <input type="text" id="setGroup" placeholder="@TGS#_@TGS#...">
-    </div>
-    <div class="msg" id="setMsg"></div>
-    <div class="actions">
-      <button onclick="closeSettings()">取消</button>
-      <button onclick="probeIm()">测试 IM 凭证</button>
-      <button class="primary" id="probeBtn" onclick="saveAndProbe()">保存并探测</button>
-    </div>
-  </div>
-</div>
-
 <!-- 统计弹窗 -->
 <div class="modal" id="statsModal" onclick="if(event.target===this)closeStats()">
   <div class="box">
@@ -390,6 +378,66 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
     </table>
     <div class="actions">
       <button class="primary" onclick="closeStats()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 全部研选文章（📚 文章按钮） -->
+<div class="modal" id="articleListModal" onclick="if(event.target===this)closeArticleList()">
+  <div class="box" style="max-width:760px;height:86vh;display:flex;flex-direction:column">
+    <h3>📚 研选文章 <span id="articleTotal" style="font-size:13px;color:var(--muted);font-weight:400"></span></h3>
+    <div id="articleList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px"
+         onscroll="if (this.scrollTop + this.clientHeight > this.scrollHeight - 60) loadArticles(_articles.page + 1)"></div>
+    <div class="actions" style="margin-top:4px">
+      <button class="primary" onclick="closeArticleList()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 置顶文本全文（点置顶条里的纯文本时） -->
+<div class="modal" id="pinTextModal" onclick="if(event.target===this)closePinText()">
+  <div class="box" style="max-width:560px;max-height:70vh;display:flex;flex-direction:column">
+    <h3>📌 置顶内容</h3>
+    <div id="pinTextBody" style="flex:1;overflow-y:auto;white-space:pre-wrap;
+      line-height:1.7;font-size:14px;user-select:text"></div>
+    <div class="actions"><button class="primary" onclick="closePinText()">关闭</button></div>
+  </div>
+</div>
+
+<!-- 视频课：栏目 + 回放列表；点条目在弹窗内直接播放（hls.js + 原生 controls） -->
+<div class="modal" id="videoModal" onclick="if(event.target===this)closeVideos()">
+  <div class="box" style="max-width:760px;height:88vh;display:flex;flex-direction:column">
+    <h3 id="videoHead">📺 视频课</h3>
+    <div id="videoPlayer" style="display:none;flex-direction:column;gap:8px;flex:1;min-height:0">
+      <div style="display:flex;align-items:center;gap:8px">
+        <button onclick="videoBackToList()" style="padding:2px 10px">‹ 返回列表</button>
+        <span id="videoPlayTitle" style="flex:1;font-weight:600;overflow:hidden;
+          text-overflow:ellipsis;white-space:nowrap"></span>
+        <a id="videoWebLink" href="#" target="_blank" style="font-size:12px;color:var(--accent)">官方页 ↗</a>
+      </div>
+      <video id="videoEl" controls playsinline
+             style="flex:1;width:100%;min-height:0;background:#000;border-radius:6px"></video>
+    </div>
+    <div id="videoListWrap" style="display:flex;flex-direction:column;gap:8px;flex:1;min-height:0">
+      <div id="videoCols" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      <div id="videoList" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:6px"
+           onscroll="if (this.scrollTop + this.clientHeight > this.scrollHeight - 60) loadVideos(_videoState.columnId, _videoState.page + 1)"></div>
+      <div class="actions" style="margin-top:4px">
+        <button class="primary" onclick="closeVideos()">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 研选文章阅读（msgType=2 卡片点开；正文是 Word 粘贴的富文本，用白底 iframe 隔离渲染） -->
+<div class="modal" id="articleModal" onclick="if(event.target===this)closeArticle()">
+  <div class="box" style="max-width:820px;height:88vh;display:flex;flex-direction:column">
+    <h3 id="articleTitle" style="padding-right:28px">📄 文章</h3>
+    <div class="ac-meta" id="articleMeta" style="margin:-6px 0 8px;color:var(--muted);font-size:12px"></div>
+    <div id="articleBody" style="flex:1;display:flex;min-height:0"></div>
+    <div class="actions">
+      <a id="articlePdf" href="#" target="_blank" style="display:none">📎 打开 PDF</a>
+      <button class="primary" onclick="closeArticle()">关闭</button>
     </div>
   </div>
 </div>
@@ -478,9 +526,8 @@ function parseRange(sel) { return sel ? sel.replace(/-/g, "") : ""; }
 // ===================== 消息渲染 =====================
 /** msgType=2：文章推送卡片。
  *  msg_content = {title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}
- *  sourceUrl 是小程序内的 H5 路径（/touguapp/tougu/index.html?path=/articleDetail...），
- *  实测在 www.zx0093.com / ht.zx0093.com / app.zx093.cn 都是 404，只能在微信小程序里打开，
- *  所以只展示卡片，不做可点链接（悬停标题可以看到原始路径）。
+ *  点卡片 → /api/article/{sourceId} 拉正文（网页版 queryArticleDetail 接口），
+ *  在弹窗里阅读；卡片上的 sourceUrl（小程序 H5 路径）已过时不用。
  */
 function renderArticle(m) {
   let a = {};
@@ -493,8 +540,9 @@ function renderArticle(m) {
   const img = a.mainImageUrl ? mediaUrl(a.mainImageUrl, "image") : "";
   const meta = [a.sourceTime ? String(a.sourceTime).slice(0, 16) : "",
                 a.sourceId ? "文章 #" + a.sourceId : ""].filter(Boolean).join(" · ");
-  return `<div class="article-card" title="${esc(a.sourceUrl || "")}">
-      ${img ? `<img class="ac-img" src="${img}" loading="lazy" onclick="openLightbox('${img}')">` : ""}
+  const clickable = a.sourceId ? `style="cursor:pointer" onclick="openArticle(${a.sourceId})"` : "";
+  return `<div class="article-card" ${clickable}>
+      ${img ? `<img class="ac-img" src="${img}" loading="lazy" onclick="event.stopPropagation();openLightbox('${img}')">` : ""}
       <div class="ac-body">
         ${a.brief ? `<span class="ac-tag">${esc(a.brief)}</span>` : ""}
         <div class="ac-title">${esc(title)}</div>
@@ -502,6 +550,244 @@ function renderArticle(m) {
       </div>
     </div>`;
 }
+
+/** 文章阅读弹窗：正文按 Word 富文本原样渲染在白底 iframe 里（图片为绝对地址可直读）。
+ *  实现：每次打开都重建 iframe 元素，并用 blob URL 导航而不是 srcdoc——
+ *  Chromium/Edge 对 sandbox+srcdoc 在同一元素上反复赋值有偶发不绘制的引擎
+ *  bug（同一篇文章第二次点开一片空白），新元素 + blob 导航绕开它；
+ *  seq 序号丢弃过期响应，避免慢的旧请求覆盖新点开的文章。 */
+let _articleSeq = 0, _articleBlobUrl = null;
+async function openArticle(articleId) {
+  const seq = ++_articleSeq;
+  const modal = document.getElementById("articleModal");
+  document.getElementById("articleTitle").textContent = "加载中…";
+  document.getElementById("articleMeta").textContent = `文章 #${articleId}`;
+  document.getElementById("articlePdf").style.display = "none";
+  modal.style.display = "flex";
+  try {
+    const r = await fetch(`/api/article/${articleId}`);
+    const d = await r.json();
+    if (seq !== _articleSeq) return;            // 已点开别的文章，丢弃过期响应
+    if (d.error) throw new Error(d.error);
+    document.getElementById("articleTitle").textContent = d.title || `文章 #${articleId}`;
+    document.getElementById("articleMeta").textContent =
+      `${d.createTime || ""} · ${d.feeStatus ? "付费" : "免费"}`;
+    if (d.pdfUrl) {
+      document.getElementById("articlePdf").href = d.pdfUrl;
+      document.getElementById("articlePdf").style.display = "inline";
+    }
+    // 给正文补基础排版：限宽 + 图片自适应，避免 Word HTML 撑破弹窗
+    const html = `<!doctype html><meta charset="utf-8">
+      <style>body{margin:16px auto;max-width:680px;font:15px/1.7 -apple-system,"PingFang SC",sans-serif;color:#222;word-break:break-word}
+      img{max-width:100%;height:auto} table{max-width:100%}</style>
+      ${d.content || "<p>（无正文；PDF 型文章请点下方链接）</p>"}`;
+    const body = document.getElementById("articleBody");
+    body.innerHTML = "";
+    const frame = document.createElement("iframe");
+    frame.setAttribute("sandbox", "");
+    frame.title = "文章正文";
+    frame.style.cssText = "flex:1;width:100%;border:0;border-radius:6px;background:#fff";
+    if (_articleBlobUrl) URL.revokeObjectURL(_articleBlobUrl);
+    _articleBlobUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+    frame.src = _articleBlobUrl;
+    body.appendChild(frame);
+  } catch (e) {
+    if (seq !== _articleSeq) return;
+    document.getElementById("articleTitle").textContent = "加载失败";
+    document.getElementById("articleBody").innerHTML =
+      `<div style="flex:1;color:#c00;padding:24px;font:14px system-ui">${esc(String(e))}</div>`;
+  }
+}
+function closeArticle() { document.getElementById("articleModal").style.display = "none"; }
+
+// ===================== 视频课（列表 + 弹窗内直接播放） =====================
+const _videoState = { columnId: 0, page: 0, items: [], busy: false, done: false };
+let _hls = null;
+
+async function showVideos() {
+  document.getElementById("videoModal").style.display = "flex";
+  videoBackToList();
+  if (!_videoState.items.length) {
+    document.getElementById("videoList").innerHTML = '<div class="empty">加载中…</div>';
+    await loadVideos();
+  }
+}
+
+async function loadVideos(columnId, page = 1) {
+  // 同栏目：防重复翻页 + 到底就停；换栏目：从第 1 页重来
+  const switching = columnId !== undefined && columnId !== _videoState.columnId;
+  if (_videoState.busy || (!switching && (_videoState.done || page <= _videoState.page))) return;
+  _videoState.busy = true;
+  try {
+    const q = columnId ? `?column_id=${columnId}&page=${page}` : `?page=${page}`;
+    let d;
+    try {
+      d = await (await fetch(`/api/videos${q}`)).json();
+    } catch (e) { d = { error: String(e) }; }
+    if (d.error) {
+      document.getElementById("videoList").innerHTML = `<div class="empty">加载失败：${esc(d.error)}</div>`;
+      return;
+    }
+    _videoState.columnId = d.columnId;
+    _videoState.page = d.page || page;
+    _videoState.done = (d.playbacks || []).length < 10;
+  const cols = document.getElementById("videoCols");
+  if (d.columns && d.columns.length && !cols.children.length) {
+    cols.innerHTML = d.columns.map(c =>
+      `<button class="vcol" data-id="${c.columnId}" onclick="loadVideos(${c.columnId})"
+        title="${esc(c.name)}">${esc(c.name)}（${c.number || "?"}）</button>`).join("");
+  }
+  cols.querySelectorAll(".vcol").forEach(b =>
+    b.classList.toggle("on", +b.dataset.id === d.columnId));
+  _videoState.items = page > 1 ? _videoState.items.concat(d.playbacks || []) : (d.playbacks || []);
+  document.getElementById("videoList").innerHTML = _videoState.items.length
+    ? _videoState.items.map(v => `
+      <div class="vitem" title="${esc(v.title)}" onclick="playVideo(${v.id}, ${v.teacherId})">
+        <img src="${mediaUrl(v.coverImg, "image")}" loading="lazy" alt="">
+        <div class="vbody">
+          <div class="vtitle">${esc(v.title)}</div>
+          <div class="vmeta">${esc((v.pubTime || "").slice(0, 16))} · #${v.id}
+            ${v.feeStatus ? ' · <span class="ac-tag">付费</span>' : ""}</div>
+        </div>
+        <span class="vplay">▶</span>
+      </div>`).join("")
+    : '<div class="empty">这个栏目还没有回放</div>';
+    // 首屏没撑出滚动条就自动补下一页（setTimeout 等 busy 释放后再进）
+    const vbox = document.getElementById("videoList");
+    if (vbox.clientHeight > 0 && vbox.scrollHeight <= vbox.clientHeight && !_videoState.done)
+      setTimeout(() => loadVideos(_videoState.columnId, _videoState.page + 1), 0);
+  } finally { _videoState.busy = false; }
+}
+
+/** 弹窗内播放：queryById 拿免签 m3u8（CORS 全开），hls.js 拉流，原生 controls 管播放/全屏 */
+async function playVideo(id, teacherId) {
+  const player = document.getElementById("videoPlayer");
+  const el = document.getElementById("videoEl");
+  document.getElementById("videoPlayTitle").textContent = "加载中…";
+  document.getElementById("videoWebLink").href =
+    `https://client.zx093.com/webktc/tougu/index.html?path=/video&id=${id}&teacherId=${teacherId}`;
+  document.getElementById("videoListWrap").style.display = "none";
+  player.style.display = "flex";
+  try {
+    const d = await (await fetch(`/api/video_play/${id}`)).json();
+    if (d.error) throw new Error(d.error);
+    document.getElementById("videoPlayTitle").textContent = d.title || `视频 #${id}`;
+    if (_hls) { _hls.destroy(); _hls = null; }
+    if (el.canPlayType("application/vnd.apple.mpegurl")) {
+      el.src = d.m3u8;                     // Safari 原生 HLS
+    } else if (window.Hls && Hls.isSupported()) {
+      _hls = new Hls();
+      _hls.loadSource(d.m3u8);
+      _hls.attachMedia(el);
+    } else {
+      throw new Error("浏览器不支持 HLS 播放");
+    }
+    el.play().catch(() => {});
+  } catch (e) {
+    document.getElementById("videoPlayTitle").textContent = "播放失败：" + e;
+  }
+}
+function videoBackToList() {
+  const el = document.getElementById("videoEl");
+  el.pause(); el.removeAttribute("src"); el.load();
+  if (_hls) { _hls.destroy(); _hls = null; }
+  document.getElementById("videoPlayer").style.display = "none";
+  document.getElementById("videoListWrap").style.display = "flex";
+  document.getElementById("videoHead").textContent = "📺 视频课";
+}
+function closeVideos() {
+  videoBackToList();
+  document.getElementById("videoModal").style.display = "none";
+}
+
+// ===================== 全部研选文章（列表 → 点击用文章阅读弹窗） =====================
+const _articles = { page: 0, items: [], busy: false, done: false };
+async function showArticles() {
+  document.getElementById("articleListModal").style.display = "flex";
+  if (!_articles.items.length) {
+    document.getElementById("articleList").innerHTML = '<div class="empty">加载中…</div>';
+    await loadArticles(1);
+  }
+}
+async function loadArticles(page) {
+  if (_articles.busy || _articles.done || page <= _articles.page) return;
+  _articles.busy = true;
+  try {
+    let d;
+    try {
+      d = await (await fetch(`/api/articles?page=${page}`)).json();
+    } catch (e) { d = { error: String(e) }; }
+    if (d.error) {
+      document.getElementById("articleList").innerHTML =
+        `<div class="empty">加载失败：${esc(d.error)}</div>`;
+      return;
+    }
+    _articles.page = page;
+    _articles.done = !d.hasNextPage;
+    _articles.items = page > 1 ? _articles.items.concat(d.articles || []) : (d.articles || []);
+    document.getElementById("articleTotal").textContent = d.total ? `共 ${d.total} 篇` : "";
+    document.getElementById("articleList").innerHTML = _articles.items.length
+      ? _articles.items.map(a => `
+        <div class="vitem" title="${esc(a.articleTitle)}" onclick="openArticle(${a.id})">
+          <div class="vbody">
+            <div class="vtitle">${esc(a.articleTitle)}</div>
+            <div class="vmeta">${esc((a.createTime || "").slice(0, 16))} · #${a.id}
+              ${a.feeStatus ? ' · <span class="ac-tag">付费</span>' : ""}</div>
+          </div>
+        </div>`).join("")
+      : '<div class="empty">还没有文章</div>';
+    // 首屏没撑出滚动条就自动补下一页（setTimeout 等 busy 释放后再进）
+    const abox = document.getElementById("articleList");
+    if (abox.clientHeight > 0 && abox.scrollHeight <= abox.clientHeight && !_articles.done)
+      setTimeout(() => loadArticles(_articles.page + 1), 0);
+  } finally { _articles.busy = false; }
+}
+function closeArticleList() { document.getElementById("articleListModal").style.display = "none"; }
+
+// ===================== 置顶消息（房间级，pinnedListById） =====================
+let _pins = [];
+async function loadPins() {
+  try {
+    const d = await (await fetch("/api/pinned")).json();
+    _pins = d.pins || [];
+  } catch (e) { _pins = []; }
+  renderPins();
+}
+function pinSummary(p) {
+  try {
+    if (+p.msgType === 1) { JSON.parse(p.msgContent); return "📷 [图片]"; }
+    if (+p.msgType === 2) { return "📄 " + (JSON.parse(p.msgContent).title || "文章"); }
+  } catch (e) {}
+  return String(p.msgContent || "").replace(/\s+/g, " ").slice(0, 80);
+}
+function renderPins() {
+  const bar = document.getElementById("pinBar");
+  if (!_pins.length) { bar.style.display = "none"; return; }
+  bar.style.display = "flex";
+  document.getElementById("pinCount").textContent = _pins.length;
+  document.getElementById("pinCurr").textContent = pinSummary(_pins[0]);
+  document.getElementById("pinPanel").innerHTML = _pins.map((p, i) => `
+    <div class="pin-item" onclick="openPin(${i})">
+      <div>${esc(pinSummary(p))}</div>
+      <div class="pmeta">${esc((p.msgDate || "").slice(0, 16))}${p.feeStatus ? " · 付费" : ""}</div>
+    </div>`).join("");
+}
+function togglePinPanel(force) {
+  const panel = document.getElementById("pinPanel");
+  const show = force != null ? force : panel.style.display !== "block";
+  panel.style.display = show ? "block" : "none";
+}
+function openPin(i) {
+  const p = _pins[i];
+  try {
+    if (+p.msgType === 1) { openLightbox(mediaUrl(JSON.parse(p.msgContent).imgUrl, "image")); return; }
+    if (+p.msgType === 2) { openArticle(JSON.parse(p.msgContent).sourceId); return; }
+  } catch (e) {}
+  togglePinPanel(false);
+  document.getElementById("pinTextBody").textContent = p.msgContent || "";
+  document.getElementById("pinTextModal").style.display = "flex";
+}
+function closePinText() { document.getElementById("pinTextModal").style.display = "none"; }
 
 function renderContent(m, kw) {
   // msgType: 0=文本 1=图片 2=文章推送卡片（老师发的早盘预案/知识点小结）
@@ -547,7 +833,7 @@ function renderMsg(m, frag, kw) {
     : `<div class="avatar-ph">${firstChar(m.nick_name)}</div>`;
 
   // 只保留数据上站得住的标记：
-  //   老师   = user_type=4
+  //   老师   = user_type 3（网页版）/ 4（小程序时代）
   //   审核中 = auditStatus=0（仅 REST 权威数据会给出 0）
   // 不再显示“实时/VIP/私聊回复”：前两个字段在 IM 推送里是审核前的占位值
   // （实测 REST 里 14299 条全是 0），真正的“老师回复某人”信号是 toUserId>0。
@@ -589,7 +875,7 @@ function renderMessages(msgs, list, kw, followBottom) {
   list.innerHTML = "";
   if (!msgs.length) {
     list.innerHTML = `<div class="empty">暂无消息<br>
-      <span style="font-size:12px">配置 centraltoken 后点「⏬ 全量同步」拉取线上消息</span></div>`;
+      <span style="font-size:12px">未登录——去 <a href="/login" target="_blank">登录页</a>（扫码 / 账密）后再拉线上消息</span></div>`;
     return;
   }
   // 条数不多就一次性渲染完，然后直接贴底。
@@ -1263,7 +1549,6 @@ function connectWS() {
     }
     else if (d.type === "sync_progress") { onSyncProgress(d); }
     else if (d.type === "media_progress") { onMediaProgress(d); }
-    else if (d.type === "token") { updateTokenAge(d.data); }
     else if (d.type === "event") {
       const hint = document.getElementById("newMsgHint");
       // 群提示（进出场）：仅记录，不打断阅读
@@ -1277,23 +1562,26 @@ function connectWS() {
 }
 setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 45000);
 
+/** 只有这两种视图弹「N 条新消息」：默认「最新」视图（没点任何范围按钮）和日历的「今天」。
+ *  近3天/近7天/全部属于读历史的范围视图，新消息照常静默插进列表底部，但不弹提示。 */
+function isLiveView() {
+  if (searchMode) return false;
+  if (currentDay) return currentDay === todayStr();
+  return !document.querySelector("[data-range].active");
+}
+
 function onRealtimeMessage(m) {
   const key = msgKey(m);
   if (!key || seenKeys.has(key)) return;
   if (m.id && allMessages.some(x => x.id === m.id)) return;
   seenKeys.add(key);
-  const isTeacherSide = m.user_type === 4;
+  const isTeacherSide = (m.user_type === 3 || m.user_type === 4);
 
   // 只在「当前视图确实包含这条消息」时才插进列表。
-  // 正在通读历史某天（或看搜索结果）时插进去，列表内容会在你眼皮底下变长、
-  // 滚动位置跟着漂，看起来就是“它又自己动了”——那种情况只累计新消息提示。
+  // 正在通读历史某天（或看搜索结果）时既不插列表、也不弹「N 条新消息」——
+  // 消息后端已入库，切回今天自然能拉到，别打断阅读。
   const viewingLive = !searchMode && (!currentDay || currentDay === todayStr());
-  if (!viewingLive) {
-    pendingNew++;
-    document.getElementById("newMsgCount").textContent = pendingNew;
-    document.getElementById("newMsgHint").style.display = "block";
-    return;
-  }
+  if (!viewingLive) return;
 
   allMessages.push(m);
   allMessages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -1323,7 +1611,7 @@ function onRealtimeMessage(m) {
   // 以前这里是 if (stickToBottom) scrollToBottom(true) → 两栏一起被拽到底。
   followList(list);
   if (isTeacherSide) followList(document.getElementById("teacherList"));
-  if (!_follow.allList) {
+  if (isLiveView() && !_follow.allList) {
     pendingNew++;
     const hint = document.getElementById("newMsgHint");
     document.getElementById("newMsgCount").textContent = pendingNew;
@@ -1335,19 +1623,30 @@ function updateImStatus(d) {
   const dot = document.getElementById("imDot");
   const txt = document.getElementById("imText");
   const map = {
-    online: ["on", "实时已连接"],
-    connecting: ["warn", "连接中…"],
-    login_failed: ["err", "IM 登录失败"],
-    error: ["err", "IM 异常"],
-    closed: ["warn", "IM 断开重连中"],
-    off: ["", "实时未启用"],
+    online: ["on", "实时 ✓"],
+    connecting: ["warn", "连接中"],
+    login_failed: ["err", "IM ✗"],
+    error: ["err", "IM ✗"],
+    closed: ["err", "重连中"],
+    off: ["err", "无实时"],
   };
   const [cls, label] = map[d.im_state] || ["", "未知"];
   dot.className = "dot " + cls;
-  txt.textContent = label + (d.im_detail ? " · " + d.im_detail.slice(0, 40) : "");
+  txt.className = cls;
+  txt.textContent = label;
+  txt.title = d.im_detail || "";      // tinyid 等细节放悬停提示，不占行宽
 }
 
-// ===================== 设置 / 探测 =====================
+// ===================== 退出登录 =====================
+async function logout() {
+  if (!confirm("退出登录：清掉本机保存的 centraltoken / IM 凭证（消息库不动），回到登录页。")) return;
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch (e) { /* 服务没响应也照样回登录页 */ }
+  location.href = "/login";
+}
+
+// ===================== 状态刷新 =====================
 async function loadStatus() {
   const r = await fetch("/api/status");
   const d = await r.json();
@@ -1356,34 +1655,26 @@ async function loadStatus() {
   }
   myUserId = String(d.my_user_id || "");
   updateImStatus({ im_state: d.im.state, im_detail: d.im.detail });
-  if (d.token) updateTokenAge(d.token);
   // 把后台自适应节奏显示在按钮 tooltip 上（IM 在线时故意拉得很长，不浪费请求）
   if (d.sync) {
-    const btn = document.getElementById("syncMoreBtn");
     const iv = d.sync.interval || 0;
-    if (btn) btn.title = "手动立刻拉一次最新消息。\n"
-      + `后台自动核对：每 ${iv ? iv + " 秒" : "-"}（${d.sync.interval_reason || "-"}）`;
+    window._syncIvText = `后台自动核对：每 ${iv ? iv + " 秒" : "-"}（${d.sync.interval_reason || "-"}）`;
   }
   // 同步进度（刷新页面时如果后台还在跑，也能接上）
   if (d.sync && d.sync.running) { onSyncProgress(d.sync); startSyncPolling(); }
   else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
-  const modalOpen = document.getElementById("settingsModal").style.display === "flex";
-  if (!modalOpen) {
-    document.getElementById("setToken").value = "";
-    document.getElementById("setTeacher").value = d.teacher_id || "";
-  }
   const banner = document.getElementById("warnBanner");
   const warns = [];
-  if (!d.has_token) warns.push('未配置 centraltoken（只能浏览本地已同步消息）');
+  if (!d.has_token) warns.push('未登录（只能浏览本地已同步消息）');
   if (!d.im.state || d.im.state === "off") warns.push("实时消息未启用");
   if (d.im.state === "login_failed") warns.push("IM 凭证失效（userSig 过期）");
   if (d.token && d.token.warn) {
     warns.push(`centraltoken 已用 ${fmtDur(d.token.age_sec)}，`
-      + `已接近历史寿命（中位 ${fmtDur(d.token.lifetime_median)}），建议提前刷新`);
+      + `已接近历史寿命（中位 ${fmtDur(d.token.lifetime_median)}），建议重新登录`);
   }
   if (warns.length) {
-    banner.innerHTML = "⚠️ " + warns.join(" · ") +
-      ' · <a onclick="openSettings()">去设置</a>';
+    banner.innerHTML = "⚠️ " + warns.join(" · ")
+      + ' · <a href="/login">去登录 ↗</a>';
     banner.classList.add("show");
     document.getElementById("main").classList.add("with-banner");
   } else {
@@ -1391,82 +1682,6 @@ async function loadStatus() {
     document.getElementById("main").classList.remove("with-banner");
   }
   return d;
-}
-function openSettings() {
-  document.getElementById("setMsg").textContent = "";
-  document.getElementById("settingsModal").style.display = "flex";
-  loadStatus();
-}
-function closeSettings() { document.getElementById("settingsModal").style.display = "none"; }
-
-async function saveImOnly() {
-  const body = {
-    im_sdk_app_id: document.getElementById("setSdk").value.trim(),
-    im_identifier: document.getElementById("setIdent").value.trim(),
-    im_user_sig: document.getElementById("setSig").value.trim(),
-    im_group_id: document.getElementById("setGroup").value.trim(),
-    im_enabled: "1",
-  };
-  if (!body.im_user_sig) return false;
-  await fetch("/api/settings", { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify(body) });
-  return true;
-}
-
-async function saveAndProbe() {
-  const msg = document.getElementById("setMsg");
-  const btn = document.getElementById("probeBtn");
-  const token = document.getElementById("setToken").value.trim();
-  const teacher = document.getElementById("setTeacher").value.trim() || "328";
-  const sig = document.getElementById("setSig").value.trim();
-  msg.className = "msg";
-  msg.textContent = "处理中…";
-  btn.disabled = true;
-  try {
-    if (sig) await saveImOnly();
-    if (token) {
-      const r = await fetch("/api/probe", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ centraltoken: token, teacher_id: parseInt(teacher, 10) })
-      });
-      const d = await r.json();
-      if (d.error) { msg.textContent = "❌ " + d.error; return; }
-      msg.className = "msg ok";
-      msg.textContent = `✅ 房间 #${d.room.id} ${d.room.name}｜老师 ${d.room.teacher || ""}｜`
-        + (d.im_ready ? "IM 凭证已更新" : "IM 凭证获取失败：" + (d.im_error || ""));
-      await loadStatus();
-      // 探测成功后先拉最新几页，让首屏马上有内容（全量同步由用户手动触发）
-      setTimeout(() => syncMore(), 500);
-    } else {
-      msg.className = "msg ok";
-      msg.textContent = "✅ IM 凭证已保存（未填 centraltoken，跳过房间探测）";
-      await loadStatus();
-    }
-  } catch (e) {
-    msg.textContent = "❌ " + e;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function probeIm() {
-  const msg = document.getElementById("setMsg");
-  msg.className = "msg";
-  msg.textContent = "正在连接腾讯云 IM 测试登录…";
-  await saveImOnly();
-  try {
-    const r = await fetch("/api/probe-im", { method: "POST",
-      headers: { "content-type": "application/json" }, body: "{}" });
-    const d = await r.json();
-    if (d.ok) {
-      msg.className = "msg ok";
-      msg.textContent = `✅ IM 登录成功（TinyId ${d.tinyId}）`;
-    } else {
-      msg.textContent = `❌ IM 登录失败：${d.errorInfo || d.error || "未知"}`;
-    }
-  } catch (e) {
-    msg.textContent = "❌ " + e;
-  }
 }
 
 async function _postSync(body, hint) {
@@ -1482,16 +1697,12 @@ async function _postSync(body, hint) {
       startSyncPolling();
       return true;
     }
-    alert(d.error); if (r.status === 401) openSettings(); return false;
+    if (r.status === 401) { alert(d.error); location.href = "/login"; return false; }
+    alert(d.error); return false;
   }
   showSyncBar(hint);
   startSyncPolling();
   return true;
-}
-
-/** 日常增量：只拉最新几页 */
-async function syncMore() {
-  await _postSync({ pages: 5, page_size: 1000 }, "同步最新中…");
 }
 
 /** 全量：一直翻到最早（拿到多少存多少，页面会实时显示进度） */
@@ -1543,7 +1754,8 @@ function onSyncProgress(p) {
     // 你已经滚上去在翻历史时不要重载当前视图 —— 重载会重新渲染并按「切换视图」
     // 的规则贴到底，看起来就是“过一会儿又自己跳到底了”。新消息本来就会由 IM 推过来。
     if (_follow.allList) loadMessages();
-    else {
+    else if (isLiveView()) {
+      // 只有「最新/今天」视图弹提示；范围视图和历史日期一律安静
       pendingNew++;
       document.getElementById("newMsgCount").textContent = pendingNew;
       document.getElementById("newMsgHint").style.display = "block";
@@ -1572,12 +1784,13 @@ function setMediaBtn(m) {
   const btn = document.getElementById("mediaBtn");
   if (!btn) return;
   if (m.running) {
-    btn.textContent = `🖼 补齐中 ${m.task_current || 0}/${m.task_total || 0}`;
+    btn.textContent = `⏬${m.task_current || 0}/${m.task_total || 0}`;
     btn.disabled = true;
     return;
   }
   btn.disabled = false;
-  btn.textContent = m.missing ? `🖼 补齐图片 (${m.missing})` : "🖼 图片已离线";
+  // 顶栏要挤一行，按钮只放数字，细节全在 tooltip
+  btn.textContent = m.missing ? `🖼 ${m.missing}` : "🖼 ✓";
   btn.title = `图片 ${m.images}/${m.images_total} · 头像 ${m.avatars}/${m.avatars_total}`
     + ` · 占用 ${((m.bytes || 0) / 1048576).toFixed(1)} MB\n${m.dir || "data/cache"}`
     + (m.missing ? "\n\n断网前建议补齐：点一下开始下载全部图片与头像" : "\n\n已全部本地化，可断网翻完整历史");
@@ -1589,15 +1802,6 @@ async function loadMediaStatus() {
     setMediaBtn(d);
     return d;
   } catch (e) { return null; }
-}
-
-async function syncMedia() {
-  const d = await loadMediaStatus();
-  if (d && !d.missing && !d.running) { alert("媒体已全部本地化，可断网查看。"); return; }
-  const r = await fetch("/api/media/sync", { method: "POST",
-    headers: { "Content-Type": "application/json" }, body: "{}" });
-  const j = await r.json();
-  if (j.error) alert(j.error);
 }
 
 /** 媒体下载进度（由 WebSocket 的 media_progress 驱动） */
@@ -1663,31 +1867,13 @@ function fmtDur(sec) {
   if (h < 48) return h.toFixed(1) + " 小时";
   return (h / 24).toFixed(1) + " 天";
 }
-function updateTokenAge(t) {
-  const el = document.getElementById("tokenAge");
-  if (!el) return;
-  if (!t || !t.set_at) { el.style.display = "none"; return; }
-  el.style.display = "";
-  el.textContent = `🕐 已用 ${fmtDur(t.age_sec)}` + (t.samples ? ` · 预计还能 ${fmtDur(t.eta_sec)}` : "");
-  el.className = "token-age" + (t.warn ? " warn" : "");
-  el.title = `centraltoken 签发于 ${t.set_at}`
-    + (t.source ? `（来源 ${t.source}）` : "")
-    + `\n已用 ${fmtDur(t.age_sec)}`
-    + (t.samples
-        ? `\n历史 ${t.samples} 次过期实测：短 ${fmtDur(t.lifetime_min)} / 中位 ${fmtDur(t.lifetime_median)} / 长 ${fmtDur(t.lifetime_max)}`
-          + `\n预计还能用 ${fmtDur(t.eta_sec)}`
-        : `\n还没有「过期」样本——等下一次真过期就会自动记下来，之后就能预测了`)
-    + (t.history && t.history.length
-        ? "\n\n最近：\n" + t.history.map(h =>
-            `  ${h.set_at} → ${h.lifetime ? fmtDur(h.lifetime) : "?"} ${h.reason === "expired" ? "（过期）" : "（被换掉）"}`).join("\n")
-        : "");
-}
 
 // ===================== 启动 =====================
 connectWS();
 // loadToday 以前是同步函数（返回 undefined），这里链式 .then 会直接抛 TypeError，
 // 把后面的 loadMediaStatus / setInterval 全部带崩。现在让它返回 Promise，并各自抛不误。
 loadToday().catch(e => console.warn("加载今日失败：", e)).finally(loadStatus);
+loadPins();                      // 置顶是房间级的，启动拉一次即可
 loadMediaStatus();               // 与消息加载无关，单独发起
 setInterval(() => { loadStatus(); }, 30000);
 </script>

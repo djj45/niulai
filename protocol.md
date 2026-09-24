@@ -5,6 +5,11 @@
 > 分析时间：2026-09-17 21:24 – 21:47（样本房间：chatRoomId=298「知行合一交易逻辑专栏」，teacherId=328）
 > 原始数据：`~/.zcode/workspace/default/data/capture/`（flows_20260917_212459.mitm 完整流量 / chat_apis.jsonl HTTP摘要 / ws_decoded*.txt WS解码 / history_messages.txt 历史消息 / images/ 图片原件）
 
+> **⚠️ 2026-09-24 迁移：小程序接口下线，客户端全面迁到网页版（见 附3）。**
+> 鉴权仍是 centraltoken 头、DES/sign 算法不变、IM 网关不变；变化集中在：
+> 聊天室三接口换 `/touguServer/client/community/` 前缀、验证码场景换 `17n9bhbp`、
+> UA/Referer 换浏览器身份（不再需要 accesssource）。工具侧 `niulai_api.py` 已迁移并通过在线验证。
+
 ## 0. 总体架构
 
 ```
@@ -462,3 +467,100 @@ IM sdkAppId  : 1600075223
 房间         : chatRoomId=298, imGroupId=@TGS#_@TGS#XXXXXXXXXXXXXXXX (Community/百万群, 721+人)
 centraltoken : SXQdXXXXXXXXXXXX,…(三段, 登录失效需重换)
 ```
+
+## 附3：网页版协议（2026-09-24 起，小程序接口下线后的新主通道）
+
+> 入口：`https://tougu.zx093.cn/touguapp/webChatRoom/index.html#/?teacherId=VzPD.Y8fIGs_`
+> （URL 里的 teacherId 是邀请码形态；`/app/teacher/getInviteCodeByTeacherId.htm` 可把数字 id 328 换成码 `H8X9`，接口内部仍是数字 328）
+> 抓包：Edge DevTools 导出 HAR（`data/capture/web_harr_登录抓包_20260924.har`）+ 前端 JS 静态分析（`data/capture/webjs/`）
+> 登录方式：微信扫码 或 账号密码（本工具走账密，与小程序时代同一端点同一套加密）
+
+### 与小程序版的差异（就这几点，其余全部沿用）
+
+| 项 | 小程序（旧） | 网页版（新） |
+|---|---|---|
+| 聊天室接口前缀 | `/touguServer/app/chatroom|chatrecord/…` | `/touguServer/client/community/chatroom|chatrecord/…` |
+| 验证码 sceneId | `f374igpl` | `17n9bhbp` |
+| 账密登录体 | 含 `deviceId:""` | 不带 deviceId（其余字段同，sign 同算法） |
+| getInfo | GET + centraltoken 头 | POST 表单 `{centralToken}`（头照带） |
+| UA/Referer | 微信小程序身份 + `accesssource:6` 头 | 浏览器 UA + `https://tougu.zx093.cn/`，不发 accesssource |
+
+**不变**：centraltoken 头鉴权与三段式格式、DES 账密加密（密钥 `T137SRpGil0=`）、sign（盐 `asdasdsadfg` 排序 MD5 大写）、`accountPwdVerifyLogin` 端点与「响应 data 即 centraltoken」、房间/消息 DTO（新增 `isPinned/bizType/sourceType/sendTime` 等字段，旧字段全兼容）、游标分页（`cursorId`+`direction=1`，网页版固定 pageSize=50）、IM 网关与 userSig（`/client/community/chatroom/getUserSig.htm`，仍是 cu_ 账号体系）。
+
+### 网页版新能力（工具暂未用）
+
+- `GET /client/community/chatrecord/pinnedListById.htm?chatRoomId=…` — 置顶消息（已接入工具：`/api/pinned` + 列表头下方置顶条，点图片开灯箱/文章开阅读弹窗/文本开全文弹窗）
+- `/client/article/queryArticleListByPage.htm` / `queryArticleDetail.htm` — 文章（msgType=2 卡片的正文）
+- 微信扫码登录：`/ssoserver/login/xcx/qrcode.htm`（multipart，返回二维码图）+ 轮询换 token；跳转小程序用的 appid 是 `wxd188f9c9ac3c6641`（与小程序版 appid `wx0c0819078db5e3e1` 不同，网页版带了另一套）
+- 网页版前端发图走 TIM SDK 的 COS 上传，JS 里没有 OSS policy 调用；工具仍用 `/app/oss/common/getPolicy.htm` 直传——**网页版自己就是这条链**（2026-09-24 抓包实测：网页版发图同样 getPolicy→OSS 直传→sendMessage，与工具实现逐字段一致）
+
+### 前端源（可直接读，无需反编译）
+
+```
+https://tougu.zx093.cn/touguapp/webChatRoom/js/webChatRoom.<hash>.js      # 加密/签名工具（DES/sign 的 web 实现）
+https://tougu.zx093.cn/touguapp/webChatRoom/js/chunk-01b98d02.<hash>.js   # API 路径表 + sendMessage 封装
+https://tougu.zx093.cn/touguapp/webChatRoom/js/chunk-2d16c9f6.<hash>.js   # 登录流 + 分页逻辑 + TIM SDK
+版本指纹：version.json?time=YYYYMMDDHH；上滚加载在 loadHistoryMessages()（cursorId=列表最旧一条 id）
+```
+
+### 验证记录（全部离线 + 单次在线收尾）
+
+- getAuthToken / 登录 sign：离线按盐算法复算，与 HAR 抓包值**逐字符一致**
+- 账密 DES：抓包密文解密→重加密往返**逐字节一致**
+- 响应结构：用 HAR 内 centraltoken 逐字回放（浏览器几分钟前发过的原样请求）读 DTO
+- 迁移后客户端单次在线验证：getByTeacherId / getChatRecordList（含 cursorId 翻页）/ getUserSig / getInfo / pinnedListById 全部通过
+
+### 附3.1：研选文章（msgType=2 卡片的正文，2026-09-24 实测）
+
+- 官方链路（网页版）：点卡片 → `POST account.zx093.cn/ssoserver/share/at.htm`（表单 `{token, rc}`，rc=页面随机 uuid）→ 返回 `{data: oc, st}` → 拼 `#/articleDetail?articleId=…&teacherId=…&oc=…&rc=…&st=…` 新窗口打开。oc/rc/st 只服务于分享/免登录场景。
+- **正文本体与 oc/rc/st 无关**：`POST /touguServer/client/article/queryArticleDetail.htm`，体 `{articleId, teacherId}`（= 消息卡片 msgContent.sourceId + 房间 teacherId）+ centraltoken 头。
+- 返回：`{articleTitle, articleContent, articleType, feeStatus, serviceStatus, createTime, userName, avatarPath, …}`。`articleContent` 是 Word 粘贴的富文本 HTML（图片为 fileoss 绝对地址，7 万字符级）；`articleType=2` 时为 JSON `{filePath}`，需再 `GET /client/article/preview.htm?path=…` 换 PDF 可读 URL（未见样本，按前端源实现）。
+- 工具实现：`TouguClient.get_article()` / `GET /api/article/<id>` → 前端文章卡片可点，弹窗内白底 iframe 渲染正文（srcdoc + 限宽/图片自适应样式），PDF 型给外链。
+
+### 附3.2：视频课（栏目/回放 + 免签直链播放，2026-09-24 实测）
+
+官方链路：网页版「视频」tab → `POST /client/live/column/queryListByTeacherId.htm {teacherId}`（栏目）
+→ `POST /client/live/playback/queryList.htm {teacherId, columnId, pageNum, pageSize:10}`（回放列表）
+→ 点条目经 at.htm 换 oc 跳 `client.zx093.com/webktc` 播放页（另一套 Vue SPA「天龙博弈」，用腾讯云 VOD/TIM 播放器）。
+
+**关键发现：不需要走 webktc。** `GET /touguServer/app/live/playback/queryById.htm?id=<videoId>` 直接返回：
+- `adaptiveUrl`：**免签自适应 m3u8**（tg.tlby0093.cn，三档 720p/480p/240p，实测 `Access-Control-Allow-Origin: *`，任何页面可直接拉流）
+- `playbackLink`：腾讯云 VOD FileId；`playerSign`：psign（走 webktc getplayinfo v4 时才需要）
+- `title/pubTime/feeStatus`
+
+工具实现：`GET /api/videos`（栏目+回放）+ `GET /api/video_play/<id>`（m3u8 直链）→ 弹窗内
+`<video controls>` + 本地 hls.js（static/hls.min.js，Safari 走原生 HLS）直接播放，
+原生控件自带播放/进度/音量/**全屏**；保留「官方页」外链兜底。
+
+### 附3.3：微信扫码登录（2026-09-24 破解 + 实测成功）
+
+```
+① POST /ssoserver/login/xcx/getAuthToken.htm    {deviceId:"12332", timestamp, sign} → authToken
+② POST /ssoserver/login/xcx/qrcode.htm          multipart {authToken, invitationCode(邀请码,328→H8X9),
+     invitationChannel:"h5_live", os:"0", loginVersion:"11", loginSource:7, loginFunction:1,
+     timestamp, sign} → 二维码 jpg（~110KB）
+③ 每 2.5s POST /ssoserver/login/xcx/authTokenExchangeToken.htm?c=<md5(authToken)>&ts=live3
+     form {authToken, timestamp, c, ts, sign} → 未扫码=status 101005「小程序没有完成登陆操作」；
+     扫码确认后 data = centraltoken（200001=二维码过期）
+```
+- `c = md5(authToken)`（网页版 timerFunc，sign/qrcode/轮询三处全部离线逐字符对拍）
+- invitationCode 从 `/app/teacher/getInviteCodeByTeacherId.htm {teacherId}` 拿
+- 工具实现：`POST /api/login/qrcode`（生成，返回 base64 图 + auth_token）+
+  `POST /api/login/qrcode/poll`（轮询；确认后自动走 apply_centraltoken 全套 probe）。
+  /login 页扫码为主入口，**用户实扫验证通过**（djj45 登录成功、token/IM 全自动写入）。
+
+### 附3.4：账密滑块在本页复活（当年「prefix 不存在」结论作废）
+
+> **2026-09-24 追记：prefix 其实存在，值是 `v98goc`。** 当天官方登录抓包（Edge HAR）里
+> 初始化/验证请求走 `v98goc.captcha-open.aliyuncs.com` / `v98goc-verify.captcha-open…`。
+> 之前「无 prefix」是从 webChatRoom 的 bundle 反推的，漏了账密登录页（account.zx093.cn）
+> 的初始化。不传 prefix 时 SDK 拼 `undefined.captcha-open…`，Edge 上直接 Network Error、
+> 滑块不渲染——/login 已补 `prefix:"v98goc"`。`IllegalUserTag` telemetry 警告
+> （userTag 由域名推导，127.0.0.1 无解）仍会出现，但不影响出票。
+
+网页版 webChatRoom 的初始化就是 `window.initAliyunCaptcha({SceneId:"17n9bhbp", mode:"embed",
+element, slideStyle:{width:313,height:44}, language:"cn", success, fail, getInstance})`——
+无 prefix、无 AliyunCaptchaConfig。/login 页照抄后：在 127.0.0.1 下 SDK 的 telemetry 请求仍报
+`undefined.captcha-open… IllegalUserTag`（userTag 由域名推导，localhost 无解），
+但滑块数据上传（upload.captcha-open）成功、**success 回调正常出票**（76 字符
+`Base64({certifyId,sceneId,isSign})`）。兜底：官方页过滑块粘票据同样保留。

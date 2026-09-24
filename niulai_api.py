@@ -29,9 +29,11 @@ from datetime import datetime
 import requests
 
 # ===================== 常量 =====================
-SALT = "asdasdsadfg"                       # 小程序源码内的固定盐
+SALT = "asdasdsadfg"                       # 固定盐（小程序/网页版同源）
 SSO_BASE = "https://account.zx093.cn/ssoserver"
-API_BASE = "https://touguapi.zx093.com/touguServer/app"
+API_ROOT = "https://touguapi.zx093.com/touguServer"
+API_BASE = f"{API_ROOT}/app"                      # 仍留在 /app 前缀下的老接口
+COMMUNITY_BASE = f"{API_ROOT}/client/community"   # 网页版（2026-09 起）聊天室接口前缀
 STAT_BASE = "https://stat.zx093.cn/smartlog"
 OSS_UPLOAD_HOST = "https://filecdn-prod.oss-cn-beijing.aliyuncs.com"
 OSS_READ_BASE = "https://fileoss.zx093.com"     # 图片/头像 CDN（无鉴权，拿到 URL 即可读）
@@ -39,10 +41,11 @@ MP_APPID = "wx0c0819078db5e3e1"
 DEVICE_ID = "110110"                            # 桌面端固定设备号
 LOGIN_SOURCE = 7
 
-REFERER = f"https://servicewechat.com/{MP_APPID}/13/page-frame.html"
+# 2026-09-24 起小程序接口下线，客户端全面迁到网页版（tougu.zx093.cn/webChatRoom）。
+# UA/Referer 对齐网页版真实流量（HAR 实测可用），accesssource 头网页版不发、回放验证不需要。
+REFERER = "https://tougu.zx093.cn/"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-      "Chrome/144.0.0.0 Safari/537.36 MicroMessenger/7.0.20.1781(0x6700143B) NetType/WIFI "
-      "MiniProgramEnv/Mac MacWechat/WMPF MacWechat/3.8.7(0x13080712) UnifiedPCMacWechat(0xf2641d3f) XWEB/25561")
+      "Chrome/153.0.0.0 Safari/537.36 Edg/153.0.0.0")
 
 DEFAULT_TIMEOUT = 20
 
@@ -52,8 +55,8 @@ MSG_IMAGE = 1
 # 历史消息来源流
 SRC_ROOM = 1        # 房间消息流
 SRC_TEACHER_DM = 4  # 老师私聊回复流
-# 用户类型
-USER_TYPE_TEACHER = 4
+# 用户类型（2026-09-24 起网页版把老师从 4 改成 3，判定一律 3/4 兼容）
+USER_TYPE_TEACHER = (3, 4)
 
 
 # ===================== 异常 =====================
@@ -111,7 +114,7 @@ def now_ms() -> str:
 # 所以本地完全可复现。验证方式：与 crypto-js 的输出逐字节对比（已做，6/6 一致）。
 DES_KEY_B64 = "T137SRpGil0="                  # base64 解码＝ 8 字节 4f5dfb491a468a5d
 PWD_LOGIN_URL = "https://account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm"
-CAPTCHA_SCENE_ID = "f374igpl"                 # 线上阿里云验证码 sceneId（测试环境 c613ekby）
+CAPTCHA_SCENE_ID = "17n9bhbp"                 # 网页版（webChatRoom）阿里云验证码 sceneId；小程序时代是 f374igpl
 _TO_JS = (("/", ","), ("=", "_"), ("+", "."))
 _FROM_JS = ((".", "+"), (",", "/"), ("_", "="))
 
@@ -148,14 +151,13 @@ def password_login_params(account: str, password: str, captcha_verify_param: str
                           scene_id: str = CAPTCHA_SCENE_ID) -> dict:
     """拼出 `accountPwdVerifyLogin` 的请求体（含 sign）。
 
-    字段取自源码：loginVersion/deviceId 是**空串且要参与签名**
-    （getSign 只删了 channel，不过滤空值）；sign = upperCase(getSign(body))。
+    对齐网页版 navtarLogin 的字段（HAR 抓包逐字段核对）：不带 deviceId，
+    `loginVersion` 是**空串且要参与签名**（getSign 只删了 channel，不过滤空值）。
     """
     body = {
         "accountName": encrypt_by_des(account),
         "pwd": encrypt_by_des(password),
         "loginVersion": "",
-        "deviceId": "",
         "loginSource": LOGIN_SOURCE,
         "captchaVerifyParam": captcha_verify_param,
         "sceneId": scene_id,
@@ -195,6 +197,65 @@ def login_by_password(account: str, password: str, captcha_verify_param: str,
     if not token or not isinstance(token, str):
         raise NiuLaiError(f"登录成功但没拿到 token：{str(j)[:200]}")
     return token
+
+
+# ===================== 微信扫码登录（2026-09-24 网页版链路，全部离线验证） =====================
+# 流程：getAuthToken(deviceId=12332) → qrcode.htm(带邀请码, multipart) → 二维码 jpg
+#       → 每 2.5s 轮询 authTokenExchangeToken?c=md5(authToken)&ts=live3 → data=centraltoken
+QR_DEVICE_ID = "12332"      # 网页版 getAuthToken 的固定 deviceId（HAR 实测）
+
+
+def _sso_post(path: str, data: dict, params: dict | None = None, timeout: int = DEFAULT_TIMEOUT):
+    r = requests.post(f"{SSO_BASE}{path}", data=data, params=params,
+                      headers={"user-agent": UA, "referer": REFERER,
+                               "content-type": "application/x-www-form-urlencoded"},
+                      timeout=timeout, proxies={"http": None, "https": None})
+    r.raise_for_status()
+    return r.json()
+
+
+def get_auth_token(device_id: str = QR_DEVICE_ID) -> str:
+    """扫码登录第一步：authToken 是二维码与轮询的会话句柄。"""
+    body = {"deviceId": device_id, "timestamp": now_ms()}
+    body["sign"] = get_sign(body)
+    j = _sso_post("/login/xcx/getAuthToken.htm", body)
+    if str(j.get("status")) not in ("0", "1", "100") or not j.get("data"):
+        raise NiuLaiError(f"getAuthToken 失败 [{j.get('status')}] {j.get('message')}")
+    return j["data"]
+
+
+def create_login_qrcode(auth_token: str, invite_code: str) -> bytes:
+    """生成扫码登录二维码，返回 jpg 字节（约 100KB，前端直接 <img src=blob>）。"""
+    body = {"authToken": auth_token, "invitationCode": invite_code,
+            "invitationChannel": "h5_live", "os": "0", "loginVersion": "11",
+            "loginSource": LOGIN_SOURCE, "loginFunction": "1", "timestamp": now_ms()}
+    body["sign"] = get_sign(body)
+    files = {k: (None, str(v)) for k, v in body.items()}
+    r = requests.post(f"{SSO_BASE}/login/xcx/qrcode.htm", files=files,
+                      headers={"user-agent": UA, "referer": REFERER},
+                      timeout=DEFAULT_TIMEOUT, proxies={"http": None, "https": None})
+    if r.status_code != 200 or not r.content.startswith(b"\xff\xd8"):
+        raise NiuLaiError(f"二维码生成失败（HTTP {r.status_code}，{len(r.content)}B 非 jpg）")
+    return r.content
+
+
+def exchange_qrcode_token(auth_token: str) -> str:
+    """轮询扫码状态：手机上确认后返回 centraltoken，未确认返回空串。
+
+    c = md5(authToken)（网页版 timerFunc 实测，sign/参数均已离线逐字符对拍）。
+    """
+    c = hashlib.md5(auth_token.encode()).hexdigest()
+    body = {"authToken": auth_token, "timestamp": now_ms(), "c": c, "ts": "live3"}
+    body["sign"] = get_sign(body)
+    j = _sso_post("/login/xcx/authTokenExchangeToken.htm", body, params={"c": c, "ts": "live3"})
+    status = str(j.get("status"))
+    if status == "200001":
+        raise AuthExpired("/ssoserver/login/xcx/authTokenExchangeToken.htm（二维码过期）")
+    if status == "101005":
+        return ""                    # 「小程序没有完成登陆操作」= 还没扫码确认，继续等
+    if status not in ("0", "1", "100"):
+        raise NiuLaiError(f"轮询失败 [{status}] {j.get('message')}")
+    return j.get("data") or ""
 
 
 # ===================== 时间/媒体工具 =====================
@@ -330,14 +391,16 @@ class TouguClient:
 
     # ---------- 基础请求 ----------
     def _headers(self) -> dict:
-        h = {"accesssource": "6", "content-type": "application/json",
-             "user-agent": UA, "referer": REFERER}
+        h = {"content-type": "application/json",
+             "user-agent": UA, "referer": REFERER, "origin": REFERER.rstrip("/")}
         if self.central_token:
             h["centraltoken"] = self.central_token
         return h
 
     def _request(self, method: str, path: str, body=None, params=None) -> dict:
-        url = f"{API_BASE}{path}"
+        # /client/... 是网页版前缀，其余沿用 /app 老前缀（见常量区说明）
+        base = API_ROOT if path.startswith(("/client/", "/app/")) else API_BASE
+        url = f"{base}{path}"
         r = self.session.request(method, url, headers=self._headers(),
                                  json=body if method != "GET" else None, params=params,
                                  timeout=self.timeout)
@@ -367,7 +430,7 @@ class TouguClient:
     # ---------- 房间 / 老师 ----------
     def get_room_by_teacher(self, teacher_id: int) -> dict:
         """房间信息：id(=chatRoomId)、imGroupId、name、teacherId、enableDm、visibleDays…"""
-        return self._post("/chatroom/getByTeacherId.htm", {"teacherId": teacher_id})
+        return self._post("/client/community/chatroom/getByTeacherId.htm", {"teacherId": teacher_id})
 
     def is_has_permission(self, teacher_id: int) -> dict:
         """订单/权限：orderStatus=2 表示无有效订单。"""
@@ -378,12 +441,18 @@ class TouguClient:
 
     def get_user_sig(self) -> dict:
         """腾讯 IM 凭证：{'sdkUserId': 'cu_xxx', 'userSig': '...'}"""
-        return self._get("/chatroom/getUserSig.htm") or {}
+        return self._get("/client/community/chatroom/getUserSig.htm") or {}
+
+    def get_invite_code(self, teacher_id: int) -> str:
+        """老师邀请码（扫码登录要拼进二维码，如 328 → H8X9）。"""
+        return str(self._post("/teacher/getInviteCodeByTeacherId.htm",
+                              {"teacherId": teacher_id}) or "")
 
     def get_user_info(self) -> dict:
-        """当前登录用户资料（走 SSO 域，需 centraltoken）。"""
-        r = self.session.get(f"{SSO_BASE}/user/getInfo.htm", headers=self._headers(),
-                            timeout=self.timeout)
+        """当前登录用户资料（网页版为 POST 表单 {centralToken}，走 SSO 域）。"""
+        r = self.session.post(f"{SSO_BASE}/user/getInfo.htm", data={"centralToken": self.central_token},
+                              headers={**self._headers(), "content-type": "application/x-www-form-urlencoded"},
+                              timeout=self.timeout)
         r.raise_for_status()
         out = r.json()
         if out.get("status") == 200001:
@@ -397,14 +466,59 @@ class TouguClient:
 
         cursor_id 为空 → 最新一页；否则传当前页最旧一条的 id，direction=1 向前翻。
         source_type: 1=房间消息流, 4=老师私聊回复流。
+        字段对齐网页版（HAR 核对）：cursorId 为空时**不传**；房间流多带 bizType=1。
         """
-        data = self._post("/chatrecord/getChatRecordList.htm", {
-            "chatRoomId": room_id,
-            "cursorId": "" if cursor_id is None else str(cursor_id),
-            "userType": "", "direction": direction,
-            "pageSize": page_size, "sourceType": source_type,
-        })
-        return data or []
+        data = {"chatRoomId": room_id, "userType": "", "direction": direction,
+                "pageSize": page_size, "sourceType": source_type}
+        if cursor_id:
+            data["cursorId"] = str(cursor_id)
+        if source_type == SRC_ROOM:
+            data["bizType"] = 1
+        return self._post("/client/community/chatrecord/getChatRecordList.htm", data) or []
+
+    def get_pinned(self, room_id: int) -> list:
+        """置顶消息（网页版新接口，GET chatRoomId=…）。"""
+        return self._get("/client/community/chatrecord/pinnedListById.htm",
+                         params={"chatRoomId": room_id}) or []
+
+    # ---------- 研选文章（msgType=2 卡片的正文） ----------
+    def get_articles(self, teacher_id: int, page: int = 1, page_size: int = 15) -> dict:
+        """文章列表（网页版「研选」列表页同款参数）：
+        分页结构 {list, total, hasNextPage}，条目含 id/articleTitle/createTime/feeStatus。"""
+        return self._post("/client/article/queryArticleListByPage.htm",
+                          {"pageNum": page, "pageSize": page_size, "teacherId": teacher_id,
+                           "airticleStatus": 2, "bizType": 1}) or {}
+
+    def get_article(self, article_id: int, teacher_id: int = 0) -> dict:
+        """文章详情。articleContent 是富文本 HTML（图片为 fileoss 绝对地址）；
+        articleType=2 时是 PDF：articleContent 为 JSON 字符串 {filePath}，
+        需再调 get_article_preview(filePath) 换可读 URL。"""
+        return self._post("/client/article/queryArticleDetail.htm",
+                          {"articleId": article_id, "teacherId": teacher_id})
+
+    def get_article_preview(self, path: str) -> str:
+        """PDF 文章的预览地址（articleType=2 时用）。"""
+        return self._get("/client/article/preview.htm", params={"path": path}) or ""
+
+    # ---------- 视频（网页版「视频」标签：栏目 + 回放） ----------
+    def get_video_columns(self, teacher_id: int) -> list:
+        """视频栏目：[{columnId, name, coverImg, feeStatus, number}]。"""
+        return self._post("/client/live/column/queryListByTeacherId.htm",
+                          {"teacherId": teacher_id}) or []
+
+    def get_video_playbacks(self, teacher_id: int, column_id: int,
+                            page: int = 1, page_size: int = 10) -> list:
+        """栏目回放列表：[{id, title, coverImg, pubTime, feeStatus, teacherId}]，
+        10 条/页。播放页（用户实测）：client.zx093.com/webktc/tougu/index.html
+        ?path=/video&id=<id>&teacherId=<tid>"""
+        return self._post("/client/live/playback/queryList.htm",
+                          {"teacherId": teacher_id, "columnId": column_id,
+                           "pageNum": page, "pageSize": page_size}) or []
+
+    def get_video_play(self, video_id: int) -> dict:
+        """回放详情（可直接播放）：adaptiveUrl 就是免签 m3u8（三档清晰度，
+        CORS 全开）；playbackLink 是腾讯云 VOD FileId，playerSign 是 psign。"""
+        return self._get("/app/live/playback/queryById.htm", params={"id": video_id}) or {}
 
     def iter_records(self, room_id: int, source_type: int = SRC_ROOM, page_size: int = 15,
                      max_pages: int = 0, start_cursor: str = "", on_page=None):
@@ -428,13 +542,13 @@ class TouguClient:
 
     # ---------- 发消息 ----------
     def send_text(self, room_id: int, text: str) -> dict:
-        return self._post("/chatrecord/sendMessage.htm",
+        return self._post("/client/community/chatrecord/sendMessage.htm",
                           {"chatRoomId": room_id, "msgType": MSG_TEXT, "msgContent": text})
 
     def send_image(self, room_id: int, img_url: str, width: int, height: int) -> dict:
         content = json.dumps({"width": int(width), "height": int(height), "imgUrl": img_url},
                              separators=(",", ":"))
-        return self._post("/chatrecord/sendMessage.htm",
+        return self._post("/client/community/chatrecord/sendMessage.htm",
                           {"chatRoomId": room_id, "msgType": MSG_IMAGE, "msgContent": content})
 
     # ---------- 图片上传（OSS 直传） ----------

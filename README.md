@@ -1,22 +1,24 @@
 # 约牛聊天室（niulai）
 
-把微信小程序 **约牛**（appid `wx0c0819078db5e3e1`）的聊天室搬到浏览器里：
-**历史消息 + 实时消息 + 图片收发 + 本地归档**，按 [`protocol.md`](./protocol.md) 从零复现全部链路。
+把约牛投顾直播间的聊天室搬到浏览器里：**历史消息 + 实时消息 + 图片收发 + 文章阅读 +
+视频回放 + 本地归档**，按 [`protocol.md`](./protocol.md) 从零复现全部链路。
 
-前端参考同目录的 `../hexun`（和讯直播室工具）：双栏布局、关键词搜索、快捷时段定位、
-图片放大/粘贴上传、头像与曾用名、实时推送与「N 条新消息」提示。
+> **2026-09-24 起小程序接口已停用**，本工具整体迁移到**网页版**
+> （`tougu.zx093.cn/touguapp/webChatRoom`）的接口：登录有**微信扫码**和**账号密码**
+> 两种方式，都在 `/login` 页完成，凭证全自动写入，不再依赖抓小程序包。
+> 小程序时代的协议分析与踩坑记录保留在 `protocol.md` 附录里。
 
 ```
-┌────────────── 微信小程序约牛 ──────────────┐
-│  登录/历史/发消息       图片           实时收消息  │
-│  HTTPS REST        OSS直传      腾讯云IM WS   │
-│  account.zx093.cn  aliyuncs    my-imcloud.com │
-└──────────────────────────────────────────────┘
+┌─────────────── 约牛网页版 ───────────────┐
+│  扫码/账密登录     历史/发消息      实时收消息    │
+│  account.zx093.cn  /client/community  腾讯云IM WS  │
+│  阿里云滑块验证码   touguServer      my-imcloud.com │
+└──────────────────────────────────────────┘
         ↓ 协议复现（本工具）
-┌──────────────────────────────────────────────┐
+┌──────────────────────────────────────────┐
 │  SQLite 本地库  →  Quart(HTTP/2)  →  浏览器    │
 │  历史游标分页       WebSocket 广播   双栏实时界面  │
-└──────────────────────────────────────────────┘
+└──────────────────────────────────────────┘
 ```
 
 ---
@@ -24,8 +26,8 @@
 ## 目录
 
 - [快速开始](#快速开始)
+- [登录与凭证](#登录与凭证)
 - [两条通道，各自独立](#两条通道各自独立)
-- [拿到凭证的三种办法](#拿到凭证的三种办法)
 - [Web 界面](#web-界面)
 - [命令行工具](#命令行工具)
 - [项目结构](#项目结构)
@@ -48,16 +50,50 @@ openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -node
 uv run python run.py
 #   浏览器打开 https://127.0.0.1:5002  （首次提示证书不受信任，点继续）
 
-# 4.（可选）把之前抓包的数据导入本地库，首屏立刻有内容 + IM 实时可跑
-mitmdump -q -nr <你的>.mitm -s tools/extract_capture.py
-uv run python tools/import_seed.py
-
-# 5. 之后想拉线上历史/发消息时，一键刷新 centraltoken（详见下文「拿到凭证」）
-mitmdump -p 8888 -s tools/capture_token.py
+# 4. 登录：自动跳到 /login —— 扫微信二维码，或账号密码过一次滑块
+#    成功后自动回到主页，centraltoken / IM 凭证 / 房间信息全部自动写入，
+#    首次打开时后台自动拉取当天消息
 ```
 
 > 没有凭证也能跑：界面照常打开，浏览本地已归档的消息、图片、搜索、统计都可用；
-> 只有「拉取线上历史 / 发消息 / 收实时」需要对应凭证。
+> 只有「拉取线上历史 / 发消息 / 收实时」需要登录。
+
+---
+
+## 登录与凭证
+
+`/login` 页两条路，都保留：
+
+### ① 微信扫码（推荐，免验证码）
+
+打开页面自动生成二维码（约 2 分钟有效），微信扫一扫确认，成功后自动跳回主页。
+链路（详见 `protocol.md` 附3.3）：
+
+```
+getAuthToken（deviceId=12332）→ qrcode.htm 出码（multipart，~110KB jpg）
+→ 每 2.5s 轮询 authTokenExchangeToken.htm?c=md5(authToken)&ts=live3
+   101005=未扫码  200001=过期  data=centraltoken（成功）
+```
+
+### ② 账号密码（阿里云滑块）
+
+- 账号密码本机 DES 加密后直发 `account.zx093.cn`，不经过任何第三方；
+- 滑块是网页版同款阿里云组件：`sceneId=17n9bhbp`、`prefix=v98goc`（缺 prefix 会
+  拼出 `undefined.captcha-open…` 直接 Network Error，这是踩过的坑）、`loginSource=7`；
+- 过完滑块自动登录，票据只在内存里用完即弃，不需要人工填任何值。
+
+### 历史账号（多账户）
+
+账密登录成功后账号自动保存到本机 `.env` 的 `NIULAI_SAVED_LOGINS`（JSON 数组）：
+默认勾选「保存密码」（可取消，取消则只记账号）；下拉列表按最近登录排序，
+**打开页面自动选中并填充最新用过的那个账号**。删除在页面上点「删除选中」。
+
+### 凭证寿命（实测）
+
+| 凭证 | 寿命 | 过期后的行为 |
+|---|---|---|
+| `centraltoken` | 实测 ≥3.6 天（存疑，继续追踪在 `token_log` 表） | 业务接口返回 `200001`，去 `/login` 重新登一次 |
+| `userSig` | **几十分钟级**（比文档短得多） | 后台自动用 centraltoken 现换新的并重连 IM，无需人工 |
 
 ---
 
@@ -67,13 +103,13 @@ mitmdump -p 8888 -s tools/capture_token.py
 
 | | 历史消息 | 实时消息 |
 |---|---|---|
-| 通道 | HTTPS REST `chatrecord/getChatRecordList.htm` | 腾讯云 IM WebSocket `my-imcloud.com` |
-| 凭证 | **centraltoken**（小时级） | **userSig**（约 60 天） |
+| 通道 | HTTPS REST `client/community/getChatRecordList.htm` | 腾讯云 IM WebSocket `my-imcloud.com` |
+| 凭证 | **centraltoken** | **userSig**（自动刷新） |
 | 方向 | 游标分页往回翻 | 服务端主动推送 |
-| 发消息 | `chatrecord/sendMessage.htm`（同一凭证） | — |
+| 发消息 | `client/community/sendMessage.htm`（同一凭证） | — |
 
-**因此：`centraltoken` 过期后，只要 `userSig` 还有效，实时消息照收不误。**
-反之 `userSig` 过期也能靠轮询 REST 同步。本工具两条路都实现了，任一条可用就不算瘫。
+**因此：`centraltoken` 过期后，只要 IM 还连着，实时消息照收不误。**
+反之 IM 断了也能靠轮询 REST 同步。本工具两条路都实现了，任一条可用就不算瘫。
 
 ### 为什么要同时跑「IM 推送」和「REST 轮询」
 
@@ -82,221 +118,13 @@ IM 是主通道（秒级），REST 只负责**补漏 + 校正**，不能关：
 1. **IM 客户端没有实现离线补拉** —— 断开/重启窗口里的消息，重连后服务器不会补发，
    只能靠 REST 找回来。而这个连接实测真的会断（服务端 `HelloInterval=120`）。
 2. **IM 推送的字段是审核前占位值** —— `privateMessageFlag`/`vipUser`/`auditStatus`
-   恒定 `true/true/0`，REST 记录才是权威（实测 14,299 行全 `0/0/1`），靠它回填修正。
+   恒定 `true/true/0`，REST 记录才是权威，靠它回填修正。
 3. 系统/房间事件、`quoteContent`（引用回复）的完整形态只走 REST。
 4. 7 天历史本来就只有 REST 有。
 
-所以后台轮询的间隔是**自适应**的（`_sync_interval()`）：
-
-| IM 状态 | 间隔 | 理由 |
-|---|---|---|
-| `online` | **300 秒** | IM 正常工作，REST 只是核对，不必浪费请求 |
-| 正在连 / 刚断（`connecting` 等） | **30 秒** | 很可能刚漏消息，积极补漏 |
-| 没配 IM / `login_failed` | **60 秒** | REST 是唯一通道，但也不必太急 |
-| **刚重连成功** | **立即一次** | `_im_on_status` 发现进入 `online` 就 `_sync_wake.set()`，这一刻最需要补漏 |
-
-两个省请求的细节：
-- 增量同步**在第 1 页发现「库里已有」的 id 就停**（原来写的是 `i > 1`，
-  固定白跑一页）。消息按时间倒序回，边界在页内，更旧的页必然全是已有的；
-  真正的补空档交给「⏬ 全量同步」。
-- 只有 `added > 0` 才广播，所以追平时不会造成任何 UI 变化。
-
-当前节奏可以在「📊 统计」里看到（“后台核对节奏”），也能在「📥 同步最新」按钮的
-tooltip 上悬停查看。`/api/status` 的 `sync.interval` / `sync.interval_reason` 也带了。
-
----
-
-## 拿到凭证的三种办法
-
-### ① 一键抓取（推荐，全自动）
-
-不需要重新登录微信。只要小程序里还有有效会话，**进一次聊天室**就会带上 `centraltoken` 请求头。
-
-抓包最烦的是那堆 `networksetup`（还要记住 SOCKS 的坑、忘了恢复就没网），所以包了一个开关：
-
-```bash
-# 挂上 mitmdump + 切换系统代理（会自动把你原来的代理设置记到 /tmp/niulai_proxy_state）
-tools/proxy_capture.sh on
-
-# → 把微信里的小程序窗口【彻底关掉再重开】→ 打开约牛，进任意老师聊天室
-#   终端出现 ✅ 就完成了（token 自动写入 + 房间/IM 自动带出，不用在网页里填任何东西）
-
-# 收尾：一条命令精确还原（连 SOCKS 的开关状态一起还原）
-tools/proxy_capture.sh off
-
-tools/proxy_capture.sh status    # 随时看：代理 / mitmdump / 证书
-```
-
-脚本干的事（想手敲也行，完全等价）：
-
-```bash
-# ← 等价于 on
-cd /Users/djj45/code/niulai
-mitmdump -p 8888 --mode upstream:http://127.0.0.1:20122 -s tools/capture_token.py
-networksetup -setwebproxy       "Wi-Fi" 127.0.0.1 8888
-networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 8888
-networksetup -setsocksfirewallproxystate "Wi-Fi" off    # ← 这行必须
-
-# ← 等价于 off
-networksetup -setwebproxy       "Wi-Fi" 127.0.0.1 20122
-networksetup -setsecurewebproxy "Wi-Fi" 127.0.0.1 20122
-networksetup -setsocksfirewallproxy "Wi-Fi" 127.0.0.1 20122
-networksetup -setsocksfirewallproxystate "Wi-Fi" on
-# SOCKS 的「端口」与「开关」是两个参数：-setsocksfirewallproxystate 只接受 on/off
-#   （写成 -setsocksfirewallproxystate "Wi-Fi" 20122 会报 The parameters were not valid.），
-#   端口要用 -setsocksfirewallproxy 设。
-```
-
-> **为什么 `on` 里必须把 SOCKS 关掉**：SOCKS 和 HTTP 代理同时开着时，
-> 部分连接会走 SOCKS **直达上游代理**、绕过 mitmdump，表现就是“有些请求抓得到、
-> 有些抓不到”—— 最难查的坑。而 `off` 会把它按原状恢复回去。
-
-环境变量（脚本同样支持）：`NIULAI_WIFI`（网络服务名，默认 `Wi-Fi`）、
-`NIULAI_UPSTREAM_PORT`（你平时的代理端口，默认 `20122`）、
-`NIULAI_CAPTURE_PORT`（默认 `8888`）、`NIULAI_ADDON`（默认 `tools/capture_token.py`）。
-
-> 实测 `on → off` 往返能**精确还原**（包括把 SOCKS 从 `off` 恢复回 `on`）；
-> `on` 只在第一次记录原始状态，重复执行不会把 8888 自己存成“原始值”。
-
-> 漏抓了？终端会提示检查项（系统代理、小程序窗口是否重开、是否进了聊天室）。
-> 只读流量，不修改/不重放任何请求，不涉及账号密码。
-
-### ② 从已有抓包文件导出（适合事后补）
-
-```bash
-# 导出房间信息 + 历史消息 + centraltoken + userSig + 我的资料
-mitmdump -q -nr ~/.zcode/workspace/default/data/capture/flows_xxx.mitm -s tools/extract_capture.py
-# 生成 data/seed/capture_seed.json
-
-# 导入本地库并写入设置
-uv run python tools/import_seed.py
-```
-
-### ④ 账号密码登录 —— **已验证走不通**（记录一下为什么）
-
-链路本身完全可复现（见下），但**拿不到 `captchaVerifyParam`**，所以跑不起来：
-
-- 账密登录必须带 `captchaVerifyParam`，而它只能由阿里客户端组件产生
-- 小程序插件好用（我们没能力在微信里跑它），但换成浏览器 Web SDK 就差一个 **prefix**
-- 实测 prefix 会被**拼进请求域名当 `userTag` 校验**（不是官方文档说的“自定义前缀避冲突”）：
-
-  | prefix | 实际请求主机 | 阿里云答复 |
-  |---|---|---|
-  | `"nl"`（编的） | `nl.captcha-open.aliyuncs.com` | `IllegalUserTag` |
-  | 不发送 | `undefined.captcha-open.aliyuncs.com` | `IllegalUserTag` |
-
-  不带 prefix 时 SDK 把 `undefined` 直接拼进域名 → **这个 SDK 里 prefix 是强制的**。
-- 正确的 prefix 是**约牛在阿里云控制台配 Web 接入时生成的**。但：
-  小程序插件声明 `"plugins":{"AliyunCaptcha":{version,provider}}` 里**没有 prefix**；
-  `www.zx0093.com` / `ht.zx0093.com` / `app.zx093.cn` / `www.zx093.com` / `account.zx093.cn`
-  **全都没有任何验证码痕迹** → 他们只配了小程序接入，这个值**不存在**（不是藏起来了）
-- 而且两边票据形状不同：插件给 `Base64({certifyId,sceneId,isSign,securityToken})`，
-  Web SDK 给 `{sceneId,certifyId,deviceToken,failover}`
-
-> 所以想用账密登录，只有约牛自己在他们阿里云账号里建一个 Web 接入场景才行，
-> 我们无法绕过。**该用 `tools/proxy_capture.sh` 抓现成 token。**
-> `/login` 页面保留着，当备用入口（手里已有票据时可用）+ 逆向记录。
-
-下面是这条链路的完整细节（已用真实抓包验证过，代码在 `niulai_api.login_by_password`）。
-
-```
-POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm
-  accountName = encryptByDES(账号)      DES/ECB/PKCS7，密钥硬编码在小程序里
-  pwd         = encryptByDES(密码)
-  loginVersion = ""   deviceId = ""     空串，但**要参与签名**
-  loginSource = 7     sceneId = f374igpl
-  captchaVerifyParam = 阿里云滑块通过后的票据（一次性、短时效）
-  timestamp   = 毫秒
-  sign        = upperCase(getSign(其余字段))
-→ resp.data 就是 centraltoken
-```
-
-**DES 密钥**（源码里的默认参数，不是服务端密钥）：
-
-```js
-function g(e, t = "T137SRpGil0=") {                      // base64 → 8字节 4f5dfb491a468a5d
-  var r = CryptoJS.enc.Base64.parse(t),
-      n = CryptoJS.DES.encrypt(e, r, {mode: ECB, padding: Pkcs7});
-  return n.ciphertext.toString(CryptoJS.enc.Base64)
-          .replace(/\//g, ",").replace(/=/g, "_").replace(/\+/g, ".");
-}
-```
-
-Python 侧复刻见 `niulai_api.encrypt_by_des` / `decrypt_by_des`（已与 crypto-js
-**逐字节对比 6/6 一致**，而且拿抓到的真实密文解出账号正确、重算 `sign` 也与抓到的
-逐字节相同）。
-
-**`sceneId` 是构建期常量，不会运行时变。** 它就是小程序 config 模块里的一个字面量，
-与环境域名写在一起（线上 `f374igpl` / 测试 `c613ekby`）。扫全部 `.js`：**没有任何一处
-是从网络响应赋值的**。所以只在约牛发新版本、换场景时会变。
-
-它同时出现在**登录请求体**和**票据内部** → 抓包会立刻暴露变化。本工具已把它做成
-可配置项，`tools/capture_login.py` 抓到真实流量时会**自动写回新值**（不用手改）：
-
-```bash
-tools/proxy_capture.sh on    # 换成 capture_login.py：NIULAI_ADDON=tools/capture_login.py
-# 抓到后会打印：🔄 sceneId 变了！已同步：f374igpl → <新值>
-```
-
-`captchaVerifyParam` 的确切形状（实测 280 字符，**`Base64(JSON)`**）：
-
-```json
-{"certifyId":"T0AbC1D2Ef","sceneId":"f374igpl","isSign":true,"securityToken":"<128 字符>"}
-```
-
-形状由插件的 `verifyType` 决定（见 `plugin.dec.wxapkg`），约牛传了 `success` 回调
-→ 故为 **3.0 / isSign 形态**。
-
-> ⚠️ **验证码 Web SDK 的票据形状不一样**（它给的是
-> `JSON{sceneId, certifyId, deviceToken, failover}`，没有 `isSign`/`securityToken`）。
-> 所以 `/login` 页里的 Web SDK **大概率过不了**约牛后端的核验——试一下就知道，
-> 报「验证失败」是预期结果，不影响任何东西。真正可靠的是下面这个抓包器。
-
-> **为什么不能“抓包重放”登录**：`captchaVerifyParam` 是硬前置（没它代码根本
-> 不发请求），且 `certifyId` **一次性**，后端还会服务端到服务端再调阿里云核验。
-> 所以每次登录都得重新过滑块 —— 这也是不推荐折腾账密登录的原因：
-> 用 `tools/capture_token.py` 抓现成的 token 更省事（token 是登录的产物，能管很久）。
-
-想反向验证我们的复刻对不对，就跑抓包器：
-
-```bash
-mitmdump -p 8888 --mode upstream:http://127.0.0.1:20122 -s tools/capture_login.py
-# 然后在小程序里真点一次账号密码登录，终端会当场打印：
-#   ✅ DES 解密成功 → accountName = '...'
-#   ✅ sign 复刻正确（重算 = 抓到的）
-#   ✅ 拿到 token → 喂给应用
-```
-
-该工具**不把明文密码写盘**（样本里连 pwd 的密文都剔除），只把其余字段存到
-`data/seed/login_sample.json`。
-
-### ③ 页面里手填
-
-打开界面 → 右上角 **⚙️ 鉴权/设置**：
-
-| 字段 | 从哪来 |
-|---|---|
-| `centraltoken` | 请求头 `centraltoken`（协议 §2 ⑤） |
-| `userSig` | `chatroom/getUserSig.htm` 返回的 `data.userSig` |
-| `IM identifier` | 同一个接口的 `data.sdkUserId`，形如 `cu_1234567` |
-| `IM sdkAppId` | `chatroom/getSdkAppId.htm`，已知为 `1600075223` |
-| `imGroupId` | `chatroom/getByTeacherId.htm`，形如 `@TGS#_@TGS#...` |
-
-填完点 **保存并探测**：会自动调 `getByTeacherId` 校验 token、带出房间信息、
-再自动拉 `getSdkAppId` / `getUserSig` / `user/info`，一次填好全部。
-不确定 userSig 是否还能用就点 **测试 IM 凭证**（真的连一次腾讯云 IM 做 wslogin）。
-
-### ③ .env 预置
-```bash
-cp .env.example .env    # 填 NIULAI_CENTRALTOKEN / NIULAI_IM_USER_SIG …
-```
-
-首次启动写入数据库；之后以数据库为准（页面里改）。
-
-> **为什么不做自动登录？** 协议 §2 的 SSO 链需要微信 `wx.login` 的一次性 `loginCode`，
-> 只能在微信小程序里取得（`niulai_api.SsoClient` 已实现完整链路，可传 loginCode 调用）；
-> 附 1.5 的账密登录又要过阿里云滑块（服务端二次核验，重放无效）。
-> 所以本地工具以「粘贴 centraltoken」为主路径，这也和 hexun 工具的做法一致。
+后台轮询间隔自适应（`_sync_interval()`）：IM 在线 300s、连接中 30s、
+仅 REST 60s、**IM 刚重连成功立即一次**（这一刻最需要补漏）。
+增量同步在库里见到已有 id 就停；只有 `added > 0` 才广播，不打扰 UI。
 
 ---
 
@@ -306,93 +134,47 @@ cp .env.example .env    # 填 NIULAI_CENTRALTOKEN / NIULAI_IM_USER_SIG …
 
 | 功能 | 说明 |
 |------|------|
-| **日历（顶部栏）** | `日期 [2026-09-18] ◀ 前一天 今天 后一天 ▶`，默认就是**今天**。选任意一天 → 该天消息**时间正序**全量载入，并停在**当天最新处**（底部） |
-| **日期分隔条** | 列表里跨天会插一条 `2026 年 9 月 18 日 · 星期五`，只有时刻看不出是哪天的问题不再有 |
-| **顶部计数会报实际范围** | `2026-09-18（日历） · 已加载 3136 / 3136 条 · 09-18 06:31 → 09-18 23:29`，一眼确认在看哪天 |
-| **范围模式** | 近3天 / 近7天 / 全部：取最新的 1200 条并停在最新，**滚到列表顶部自动接更早的 1000 条**（保持阅读位置不跳） |
-| **双栏布局** | 左栏「🎓 老师观点」（`userType=4`），右栏全部消息 |
-| **标记只有两种** | `老师`（user_type=4）与 `回复`（老师回复了具体某人，`toUserId>0`）。~~实时/VIP/私聊回复~~ 已移除，原因见下方协议表 |
-| **实时消息** | 腾讯云 IM 推送 → 落库 → WebSocket 广播到浏览器；贴底时自动追加，离开底部显示「N 条新消息」浮动条 |
-| **时间范围** | 今天 / 近 3 天 / 近 7 天 / 全部，一键切换 |
-| **关键词搜索** | 跨日期搜索并**高亮**命中词；可按用户 ID 搜索（点昵称即「只看 TA」） |
-| **快捷定位** | 9:15 集合竞价 / 9:30 早盘 / 11:30 午间 / 13:00 午后 / 14:30 尾盘 / 回到顶部 / 回到底部 |
-| **发送消息** | Enter 发送、Shift+Enter 换行，长文本自动增高 |
-| **上传图片** | 📎 选择或 ⌘V/Ctrl+V 粘贴截图，先上传预览（可点 ✕ 移除），再发送；限 2MB（约牛 OSS 限制）|
-| **图片显示** | 消息里的截图按原宽高比占位、懒加载，点击进入**可缩放/拖动/双击复位**的大图模式 |
-| **头像与曾用名** | 头像走本地缓存代理，离线可看；悬停昵称显示该用户历史昵称与发言数，别名显示「曾」标记 |
-| **引用回复** | 约牛老师的回复消息带 `quoteContent`，渲染成可点击跳转的引用条 |
-| **同步历史** | 「📥 同步最新」只拉最新几页（日常增量，遇到已有消息即停）；「⏬ 全量同步」从最新一直翻到最早，顶部进度条实时显示「N 次请求 / M 条」，幂等不会重复 |
-| **只看今天 / 看某天** | 默认就落在**最新消息**（不再从头播）；顶部进度条下面有日期选择器，可选任意一天**时间正序通读**全天 |
-| **滚动加载更早** | 一天 3000+ 条，首屏只载最新的 1200 条；滚到列表顶部会**自动接更早的 1000 条**，且保持当前阅读位置不跳 |
-| **图片/头像本地化** | 点「🖼 补齐图片」把库里引用到的**全部图片与头像**下载到 `data/cache/`，之后**断网也能翻完整历史**。启动时会自动补齐（可用 `MEDIA_AUTOFETCH=0` 关掉），按钮上随时显示还差几张 |
-| **数据概览 / 备份** | 各天消息数与老师消息分类统计，并显示媒体本地化进度；`💾 备份` 存 SQLite 到 `data/backups/` |
+| **顶栏一行放下** | `日期选择 ◀ 今天 ▶ · 近3天 近7天 全部 · 实时状态 · ⏬ 全量 📺 视频 📚 文章 💾 备份 📊 统计 🚪 退出` |
+| **打开自动拉当天** | 首次打开后台自动同步今天的消息，不需要点任何同步按钮 |
+| **双栏布局** | 左栏「🎓 老师观点」（`user_type IN (3,4)`，网页版老师是 3），右栏全部消息 |
+| **日历通读** | 选任意一天 → 该天消息时间正序全量载入，停在最新处；跨天有日期分隔条 |
+| **范围模式** | 近3天 / 近7天 / 全部：取最新一批停在底部，滚到顶部自动接更早（阅读位置不跳） |
+| **实时消息** | IM 推送 → 落库 → WebSocket 广播；贴底时自动追加。**「N 条新消息」提示只在「最新/今天」视图弹**，翻历史/范围视图保持安静（消息仍静默入库） |
+| **📚 文章** | 老师的研选文章全列表（分页触底自动加载），点开弹窗内阅读：正文是 Word 粘贴的富文本，白底 iframe（blob URL）渲染，图片可直读；聊天里的文章卡片（早盘预案/知识点小结）点开同源 |
+| **📺 视频** | 视频课栏目 + 回放列表，点条目**弹窗内直接播放**（hls.js + 原生 controls，含全屏；m3u8 免签直连） |
+| **📌 置顶** | 房间置顶消息/置顶文章显示在列表头部的置顶条，点开看全文 |
+| **关键词搜索** | 跨日期搜索并高亮；点昵称「只看 TA」 |
+| **快捷定位** | 9:15 / 9:30 / 11:30 / 13:00 / 14:30 / 回顶部 / 回底部 |
+| **发送消息 / 图片** | Enter 发送（输入法回车不误发）、📎 或 ⌘V 粘贴截图，OSS 直传（≤2MB） |
+| **图片本地化** | 后台自动补齐（启动一次 + 新消息顺手下载），断网也能翻完整历史；`/api/media` 命中本地直接读盘 |
+| **📊 统计 / 💾 备份** | 各天消息数与老师消息分类、媒体进度；备份 SQLite 到 `data/backups/` |
+| **🚪 退出登录** | 清掉本机凭证（不影响消息库），回到 `/login` |
 
 ### 状态提示
 
-顶部圆点：🟢 实时已连接 / 🟡 连接中·断开重连 / 🔴 凭证失效 / ⚪ 未启用。
-任一凭证缺失或失效时，顶部出现黄色横幅提示并给出「去设置」入口。
-
-### 纯离线查看历史
-
-图片和头像默认是**浏览到才下载**（懒加载），所以刚同步完只能看到一小部分。
-点顶部的 **🖼 补齐图片** 会把库里引用到的媒体全部抓到本地：
-
-```
-data/cache/images/    463 张  ─ md5(url)[:16]_原名.png
-data/cache/avatars/   199 张  ─ 同上
-```
-
-- 目标取自数据库（`messages.msg_type in (1,2)` 里的 `imgUrl`/`mainImageUrl` + `users.avatar_url` 去重），
-  不是靠“你点过什么”，所以**重跑幂等、已下载的会跳过**，中断重启接着补。
-- **启动后 20 秒自动补齐一次**（等到首屏加载完）。注意是**每次启动只跑一次**，不是定时轮询；
-  运行中新增的图片由 `_schedule_prefetch()` 顺手下载（内存队列上限 400，重启即丢），
-  而重启后那一次自动补齐正好把丢掉的那些找回来 —— 两者互补。不想让它自动跑就设 `MEDIA_AUTOFETCH=0`。
-- 按钮文案就是进度：`🖼 补齐图片 (421)` → `🖼 补齐中 120/662` → `🖼 图片已离线`。
-- 实测：662 个目标（图片 463 + 头像去重后 199）、共 **267 MB**、4 并发、约 4 分钟下完，0 失败。
-- 命中本地后 `/api/media` 直接读磁盘（实测 814KB 的图 13ms），**根本不发网络请求**。
-
-> 媒体目录 **不在** `💾 备份` 的范围内（那个只拷 SQLite）。图片理论上能从 CDN 重下，
-> 但它们属于服务端资源、可能被清理，想长期留存就自己把 `data/cache/` 拷走。
+顶栏圆点：🟢 实时已连接（文字同步变绿）/ 🟡 连接中 / 🔴 断开·凭证失效·未启用。
 
 ### 贴底只做一次
 
-“贴到底部”只应该在**刚打开 / 切换日期（或范围）**时执行一次；之后你自由浏览，
-不要再有任何自动滚动。另外**两栏的滚动位置完全独立**：你翻左栏时右栏来新消息，
-不应该把左栏也拉下去。规则：
-
-- 加载 → `renderMessages(..., followBottom=true)` → 两栏各贴底**一次**。
-- 实时新消息 / 图片撑开 → 只调 `followList(那一栏)`，而且只在该栏本来就贴着底部时才动。
-- `scrollToBottom()`（同时滚两栏）**只给用户主动动作**：回到底部按钮、新消息提示条。
-- 你已滚上去时，后台同步完成不重载视图，只累加「N 条新消息」提示。
+「贴到底部」只在刚打开/切换日期（或范围）时执行一次；之后自由浏览，
+两栏滚动位置完全独立，实时消息只跟随「本来就贴底」的那一栏。
 
 ---
 
 ## 命令行工具
 
 ```bash
-# 1) 一键抓 centraltoken（mitmproxy addon，抓到一个就自动写入应用）
-mitmdump -p 8888 --mode upstream:http://127.0.0.1:20122 -s tools/capture_token.py
-
-# 2) 命令行全量同步（不跟浏览器并行跑；命令行为主）
+# 1) 命令行全量同步（不跟浏览器并行跑；命令行为主）
 uv run python tools/sync_all.py                 # 全量，翻到最早
 uv run python tools/sync_all.py --days 3        # 只同步近 3 天
-uv run python tools/sync_all.py --source 4      # 同步老师私聊回复流
 uv run python tools/sync_all.py --status        # 看库里现有情况
 
-# 3) 从抓包文件导出种子（离线，只读）
-mitmdump -q -nr <flows.mitm> -s tools/extract_capture.py
-
-# 4) 种子入库
-uv run python tools/import_seed.py [seed.json]
-
-# 5) IM 消息解析 + 入库全链路自检（用抓包里的真实 msg_push 帧，不联网）
-uv run python tools/test_im_parse.py
-
-# 6) 端到端自检：真实推送帧 → 解析 → 去重入库 → WebSocket 广播（起临时服务，不联网）
-uv run python tools/test_e2e.py
-
-# 7) IM 握手/收消息探针（联网，只读：登录 + 进群 + 打印推送，不发消息）
+# 2) IM 握手/收消息探针（联网，只读：登录 + 进群 + 打印推送，不发消息）
 uv run python tools/im_probe.py --identifier cu_1234567 --usersig "<userSig>" --seconds 60
+
+# 3) IM 消息解析 + 入库全链路自检（用抓包里的真实 msg_push 帧，不联网）
+uv run python tools/test_im_parse.py
+uv run python tools/test_e2e.py
 ```
 
 模块也可以单独用：
@@ -408,20 +190,11 @@ for page in c.iter_records(room["id"], max_pages=5):
 c.send_text(room["id"], "hello")                  # 发文本
 c.upload_and_send_image(room["id"], open("a.png","rb").read())   # 发图片
 
-print(api.get_sign({"timestamp": "1789651672765", "deviceId": "110110"}))
-# → 4FAF606F9DBEC7CD6C965D9080E91DA9
-```
-
-```python
-import asyncio
-from niulai_im import TencentImClient
-
-async def main():
-    c = TencentImClient(1600075223, "cu_1234567", "<userSig>",
-                        ["@TGS#_@TGS#XXXXXXXXXXXXXXXX"],
-                        on_message=lambda m: print(m["nick_name"], m["msg_content"]))
-    await c.run_forever()
-asyncio.run(main())
+arts = c.get_articles(328, page=1)                # 研选文章列表
+detail = c.get_article(arts[0]["id"], 328)        # 文章正文（Word HTML）
+cols = c.get_video_columns(328)                   # 视频栏目
+plays = c.get_video_playbacks(328, cols[0]["columnId"])
+m3u8 = c.get_video_play(plays[0]["id"])["adaptiveUrl"]   # 可直接播放
 ```
 
 ---
@@ -430,178 +203,91 @@ asyncio.run(main())
 
 ```
 niulai/
-├── protocol.md              协议分析文档（本项目的实现依据）
-├── niulai_api.py            协议客户端：sign / SSO 登录链 / 业务 REST / OSS 直传
+├── protocol.md              协议分析文档（实现依据；小程序时代的结论在附录）
+├── niulai_api.py            协议客户端：sign / DES / 扫码登录链 / 业务 REST / 文章 / 视频 / OSS 直传
 ├── niulai_im.py             腾讯云 IM WebSocket 客户端（登录/心跳/进群/收推送/回执）
-├── db.py                    SQLite 存储层（消息/用户/曾用名/头像/媒体/房间/设置）
-├── app.py                   Quart 后端：REST API + WebSocket 广播 + IM 常驻监听 + 媒体缓存
+├── db.py                    SQLite 存储层（消息/用户/曾用名/头像/媒体/房间/设置/token 寿命）
+├── app.py                   Quart 后端：REST API + WebSocket 广播 + IM 常驻监听 + 登录/媒体缓存
 ├── run.py                   Hypercorn 启动（HTTP/2 + HTTPS）
-├── templates/index.html     前端（单文件，零依赖）
-├── tools/
-│   ├── capture_token.py     一键抓 centraltoken（mitmproxy addon，抓到即自动写入应用）
-│   ├── sync_all.py          命令行全量/按天同步
-│   ├── extract_capture.py   从抓包文件导出种子（只读）
-│   ├── import_seed.py       种子入库
-│   ├── im_probe.py          IM 通道探针（登录/进群/打印推送）
-│   ├── test_im_parse.py     用真实推送帧验证解析+入库
-│   └── test_e2e.py          端到端自检（推送→入库→WS 广播）
-├── data/                    运行期数据（gitignore）
-│   ├── niulai.db            SQLite 主库
-│   ├── cache/images|avatars 图片/头像本地缓存
-│   ├── backups/             数据库备份
-│   ├── seed/                抓包导出的种子
-└── _ref/                    开发期探针历史版本（gitignore，仅备查）
+├── templates/index.html     主界面（单文件，零依赖）
+├── templates/login.html     登录页（扫码 + 账密滑块 + 历史账号）
+├── static/hls.min.js        hls.js 本地副本（视频回放用）
+├── tools/                   同步 / 探针 / 自检脚本
+├── data/                    运行期数据（gitignore：库/缓存/备份/抓包）
+└── .env                     凭证与历史账号（gitignore，含密码，绝不提交）
 ```
 
 ---
 
 ## 协议实现要点
 
-实现过程中踩到的坑与关键结论（都在代码注释里标了）：
+实现过程中踩到的坑与关键结论（都在代码注释里标了，完整版见 `protocol.md`）：
 
 | 点 | 结论 |
 |---|---|
-| `sign` 算法 | 盐 `asdasdsadfg`；丢 `channel` → `k=v` 字典序 → `&key=盐` → MD5 大写。已用 6 组抓包样本验证 |
-| 业务鉴权 | 请求头 `centraltoken` + `accesssource: 6`；失效返回 `{"status":200001}` |
-| 历史分页 | `direction:1` + `cursorId=当前页最旧一条的 id`，向历史翻页；`direction:0` 则是向新翻。`sourceType` 1=房间 4=老师私聊。**翻到最早会返回空数组**，就是到底了 |
-| **`pageSize` 无上限** | 实测 15/50/200/500/1000 都按需返回（1000 条约 0.95s，2000 开始不稳）。默认 15 是客户端自选的，服务端并未限制 → 全量同步用 1000/页，比 15/页 快 60 倍 |
-| **历史只给 7 天** | 房间信息的 `visibleDays: -7` 就是历史可见窗口。实测翻到第 7 天（2026-09-12 00:00:58）就返回空，**共 14,422 条 / 409 人** —— 这就是能拿到的全部，不是同步没跑完 |
-| 单日量级 | 一天 2600~3200 条（交易时段密集）。所以单次 `size` 必然不够看，前端要「先取最新 + 滚到顶再补更早」 |
-| 消息去重 | REST 记录有 `id`；IM 推送有 `imMsgSeq`；**同一条消息 IM 会推两遍**（sync + push 双副本），按 `MsgSeq` 去重 |
-| 图片直传 | `getPolicy.htm` 拿凭证 → multipart 直传 OSS，字段：`name/policy/OSSAccessKeyId/success_action_status=200/signature/key/file`；单文件 ≤2MB；对象名为客户端生成 UUID |
-| 图片读取 | `https://fileoss.zx093.com` + `imgUrl`，**完全无鉴权**，拿到 URL 即可下载 |
-| IM 端点 | `wss://<sdkAppId>w4c.my-imcloud.com/binfo?sdkappid=…&instanceid=<32hex>&random=…&platform=8&host=mac&version=-1&sdkversion=4.4.3&compress=gzip`（binfo 本身就是 WebSocket 升级请求） |
-| **IM 帧方向性** | **客户端必须发二进制帧**（UTF-8 JSON 的 bytes）。发同内容的 **text 帧服务端会静默丢弃**（表现为连上后毫无响应）——这是最容易卡住的一点 |
-| IM 服务端帧 | 二进制帧，前 4 字节 `b"COMP"` 表示流式 gzip（`Z_SYNC_FLUSH` 无 trailer）。`gzip.decompress` 会 EOFError，必须 `zlib.decompressobj(31)` |
-| IM 握手顺序 | 连上 → `heartbeat.alive` →（收到 ack 后）`im_open_status.wslogin`（带 `identifier`/`usersig`，`cs:0`）→ 拿 `A2Key`/`TinyId`/`InstId`，之后所有帧头都要带 |
-| **IM 心跳间隔** | 实测真实客户端**每 ~26s** 发一次 `heartbeat.alive`（样本 29,28,26,11,11,10,27,14…）。服务端在下发的 `HelloInterval` 是 **120**，但真按 120s 发会被网关当空闲连接踢掉（`1006`）→ 按实测 25s 发，200s 无断开 |
-| IM 登录频率 | 两次 `wslogin` 至少隔 **15s**（SDK 源码 `_isLoginFrequencyExceeded` 里的 `15e3`）。违反后报误导性的 `70402 Invaild parameters` 或直接 1006，容易被误判成参数错 |
-| IM `cs` 字段 | 除 `heartbeat.alive`/`wslogin` 等白名单指令外，`cs = CRC32(JSON(body))`；白名单内固定 0 |
-| IM 收推送 | `im_open_push.msg_push`，`EventArray[].Event`：3=聊天消息、4=群提示（进出场/在线人数）；**必须回 `openim.ws_msg_push_ack` 带 `SessionData`**，否则重复推 |
-| 消息体来源 | 推送里 `CloudCustomData` 是约牛业务 JSON（与 REST 记录**同构**），优先用它；缺失时回退 `MsgBody`（`TIMTextElem`/`TIMImageElem`） |
-| 推送去重 | 推送里同一条消息会出现 **`id` 相同、`MsgSeq` 不同** 的两份副本；落库以 `id` 为主键即可幂等（实测 38 个推送帧 → 24 条消息 → 12 条唯一） |
-| IM 推送体积 | 群提示（`Event=4`）带 `MemberNum` 在线人数，可用于展示实时人数 |
-| 头像 | `avatarUrl` 形如 `/yzt/public/upload/user/...`，同样走 `fileoss.zx093.com` 无鉴权读取 |
-| **IM 推送不能信标记字段** | 同一条消息：IM `CloudCustomData` 给的是 `privateMessageFlag=true / vipUser=true / auditStatus=0`，而 REST 历史里是 `false / false / 1` —— **IM 推的是「审核前」版本，这几个字段是占位值**（14,299 条 REST 记录里这三个字段全是 0/0/1）。所以入库时取中立值、等 REST 回填，前端不用它们做标记 |
-| **消息类型（实测修正）** | `msgType`：`0`=文本、`1`=图片、**`2`=文章推送卡片** —— 即老师发的「早盘预案 / 知识点小结」付费文章，**不是语音**。载荷 JSON：`{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`；`sourceId` = 文章 ID（等于 `sourceUrl` 里的 `articleId`）；`sourceUrl` 是小程序内 H5 路径，实测浏览器打不开 |
-| **msgType=2 = 内参卡片** | 老师发的付费内参文章（盘前「早盘预案」+ 盘后「知识点小结」）。载荷 `{title, brief, sourceId, sourceTime, sourceUrl, mainImageUrl}`，`checkCode` 是房间级固定校验码 |
-| **内参卡片打不开（约牛自己也不行）** | 小程序的卡片点击处理只认 `msgContent.url / .link / .href`，而卡片里叫 `sourceUrl` → 落在 else 分支上弹 toast **「内参详情接入中」**。另：`product.zx093.com/yngp/yngp_app/article/queryArticleDetail.htm?articleId=<sourceId>` 无需鉴权可调，但**不是同一个 ID 空间**（拿 10064 查到的是 2023 年另一位老师的文章且正文为空）。所以前端只做展示卡片 |
-| **`contain-intrinsic-size` 的坑** | `.msg` 用了 `content-visibility:auto` + `contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换 → `scrollHeight` 反复变 → 滚动条抽搐。改成先写 `0 64px` 再写 `auto 64px`（不支持 `auto` 的浏览器自动回退） |
-| **自动贴底必须“分栏”且“只一次”** | `onRealtimeMessage` 里写着 `if (stickToBottom) scrollToBottom(true)` —— 而 `stickToBottom` **只跟踪右栏**、`scrollToBottom()` **同时滚两栏**。于是你在左栏翻历史时，右栏每来一条实时消息就把左栏也拽回底部（IM 是活的 → “隔一会儿自动贴底”）。现在自动跟随一律走 `followList(那一栏)`；`scrollToBottom()` 只给用户主动动作 |
-| **分批渲染结束后的贴底要听 `followBottom`** | `_renderBatch` 渲染完无条件 `pinToBottom(allList)`：`st.followBottom` 算了却没用，把你已滚上去的状态又改回“跟随”；而且写死 `allList`，左栏分批完从不贴底。现在只在 `followBottom` 为真时贴，且两栏一致 |
-| **快捷定位要两栏一起跳** | `jumpTo()` 原来只对 `allList` 里的节点调 `scrollIntoView`，左栏纹丝不动；而且基准日用了 `toISOString()`（UTC，比本地早 8 小时会错一天），那段“同一天优先”永远不命中。现在两栏都跳，基准日取本地日期，目标时间直接算成 ts（不再对每条节点 `allMessages.find` 一次，那是 O(n²)） |
-| **媒体缓存必须“以库为准”才行** | `_prefetch_queue` 是内存队列 + `PREFETCH_LIMIT=400`，只在同步时触发、重启就丢 → 图片只补到 107/463、头像 133/410。改成从数据库扫出全部引用（`media_targets()`）+ 单飞幂等补齐后，一次跑完 662/662 |
-| **`media_status()` 不能连实时状态一起缓存** | 它算计数要遍历 662 个目标（慢，所以要缓存 30s），但把 `running/finished/task_*` 一起缓存后，**新任务启动后 30s 内会返回上一次的 `finished=True`**，UI 会显示错状态（我自己就被这个骗过一次，以为任务没跑）。现在只缓存计数，实时字段每次现取 |
-| **`loadToday()` 是同步函数** | 启动代码写的 `loadToday().then(loadStatus)` 会直接抛 `TypeError: reading 'then'`，把紧跟其后的 `loadMediaStatus()` 和 `setInterval` 全带崩（“补齐图片”按钮永远是初始文案就这个原因）。现在 `loadToday` 返回 Promise，且链尾挂 `.catch().finally()` |
-| **`/api/media` 不能在事件循环里下载** | `cache_media` 内部是 `requests`（最长 30s 超时），直接写在 `async def` 里会卡住整个事件循环。已改 `await asyncio.to_thread(...)`（同理 `/api/backup` 打包 267MB 也丢线程池） |
-| 真正的「老师回复某人」 | 信号是 `user_type=4 且 toUserId>0`（实测 396 条），不是 `privateMessageFlag`（恒为 0）。引用快照在 `quoteContent` 里，其 `id` 才是引用目标（`/api/messages` 的 `type=reply` 就是这个筛选） |
-| **API 排序约定** | `/api/messages?order=desc` 服务端会**把结果反转为时间正序**再返回（前端好直接 append + 贴底），调用方**不要再 reverse**。踩过：左栏老师栏多反了一次 → 变新→旧，贴底后底部是早上 08:11 的文章卡片，最新那条反而被顶到看不见的顶部 |
-| 写入性能 | 逐条 `SELECT+INSERT` 时，1000 条消息要跑 ~5000 条 SQL，全程占着全局锁 → asyncio 事件循环被冻住，网页要 **20~30 秒**才响应（TLS 握手都超时）。改成每批一次 `SELECT` + `executemany`（6 条语句/批）+ 250 条一批让出 GIL 后，同步期间 `/api/status` 稳定 **30~45ms** |
+| `sign` 算法 | 盐 `asdasdsadfg`；`k=v` 字典序 → `&key=盐` → MD5 大写（抓包样本验证过） |
+| 业务鉴权 | 请求头 `centraltoken`；失效返回 `{"status":200001}` |
+| 网页版接口 | 业务路径前缀 `/touguServer/client/community/…`（历史/发送/IM 凭证）、`/client/article/…`（文章）、`/client/live/…`（视频）；与小程序版的差异表在 `protocol.md` 附3 |
+| **老师 user_type 变了** | 网页版老师是 **3**（小程序时代是 4）→ 所有判断用 `IN (3,4)`，老库新库通吃 |
+| 历史分页 | `direction:1` + `cursorId` 向历史翻页；房间流带 `bizType:1`；**翻到最早返回空数组**即到底；`pageSize` 实测可到 1000（全量同步用大页快 ~60 倍） |
+| **历史只给 7 天** | 房间信息 `visibleDays: -7`，翻到第 7 天就返回空 —— 这是能拿到的全部，不是同步没跑完 |
+| 消息去重 | REST 有 `id`；IM 推送有 `imMsgSeq`；同一条 IM 会推两遍（sync+push），按 `MsgSeq` 去重 |
+| 文章 | `queryArticleDetail.htm {articleId, teacherId}` 返回 Word 粘贴 HTML（图片绝对地址可直读）；`articleType=2` 是 PDF（载荷 JSON `{filePath}`，走 `preview.htm` 换 URL）；列表 `queryArticleListByPage.htm` 15/页 |
+| 视频 | `playback/queryById.htm` 的 `adaptiveUrl` 是**免签 m3u8**（CORS 全开），本地 hls.js 直接放；官方播放页 `client.zx093.com/webktc/tougu/index.html?path=/video&id=<id>&teacherId=<tid>` |
+| 图片直传 | `getPolicy.htm` → multipart 直传 OSS（≤2MB）；读取走 `fileoss.zx093.com` 无鉴权 |
+| 扫码登录 | `getAuthToken` → `qrcode.htm` → 轮询 `authTokenExchangeToken.htm`；`101005`=未扫码、`200001`=过期 |
+| 账密滑块 | `prefix=v98goc` 必传（否则拼 `undefined.captcha-open…`）；票据一次性，服务端会二次核验 |
+| IM 端点 | `wss://<sdkAppId>w4c.my-imcloud.com/binfo?…`，与小程序时代**同一个网关** |
+| **IM 帧方向性** | 客户端必须发**二进制帧**（UTF-8 JSON bytes）；发 text 帧服务端静默丢弃 |
+| IM 服务端帧 | 前 4 字节 `b"COMP"` 是流式 gzip（`Z_SYNC_FLUSH` 无 trailer），用 `zlib.decompressobj(31)` |
+| IM 心跳 | 真实客户端 ~26s 一次（服务端 `HelloInterval=120` 不可信，按 120 发会被踢 1006） |
+| IM 登录频率 | 两次 `wslogin` 至少隔 15s，违反报误导性的 `70402` |
+| **userSig 短命** | 网页版实测**几十分钟**就过期（远短于文档的 60 天）→ 后台自动刷新 + 重连，用户无感 |
+| IM 推送不能信标记字段 | `privateMessageFlag`/`vipUser`/`auditStatus` 是审核前占位值，入库取中立值等 REST 回填 |
+| 「老师回复某人」 | `user_type IN (3,4) 且 toUserId>0`，引用快照在 `quoteContent` |
+| `/api/messages?order=desc` | 服务端已反转为时间正序，调用方**不要**再 reverse（踩过：多反一次老师栏贴底错位） |
+| 出站直连 | 四条出站路径（requests/httpx/websockets/媒体下载）全部 `trust_env=False`/`proxies=None`，本机 sing-box 开关不影响工具 |
+| 写入性能 | 每批一次 `SELECT` + `executemany` + 250 条一批让出 GIL，同步期间 `/api/status` 稳定 30~45ms |
 
 ---
 
 ## 常见问题
 
-**Q：页面打开只有"暂无消息"？**
-A：本地库还是空的。先 `tools/import_seed.py` 导入抓包数据，或配好 `centraltoken` 后点「📥 同步历史」。
+**Q：页面打开只有“暂无消息”？**
+A：本地库还是空的。去 `/login` 登录一次，打开主页会自动拉取当天消息；
+想补更早的就点「⏬ 全量」。
 
-**Q：提示"登录失效，请更新 centraltoken"？**
-A：`centraltoken` 是小时级令牌（协议 §9 未测出确切有效期）。重新抓一次包，
-或从抓包文件里重新导出：`mitmdump -q -nr flows.mitm -s tools/extract_capture.py`，
-然后在设置里粘贴 → 保存并探测。
+**Q：提示“登录失效”？**
+A：centraltoken 过期了，去 `/login` 扫个码（或账密登一次），回来即恢复。
 
-**Q：点「全量同步」很快就说"完成"，是不是没同步完？**
-A：是同步完了。约牛只开放**最近 7 天**（房间信息里的 `visibleDays: -7`），
-翻到第 7 天服务端就返回空数组。进度条会显示「已到最早（共 N 条）」。
-想看单日全量就在上面的日期框选那天 → 「看这天」。
+**Q：点「全量」很快就说完成？**
+A：是同步完了。约牛只开放**最近 7 天**（`visibleDays: -7`），翻到第 7 天服务端
+就返回空。进度条会显示总条数。
 
-**Q：点「今天」后停在了早盘（比如 06:31），而不是最新的消息？**
-A：已修。原因很隐蔽：清空列表时浏览器会把 `scrollTop` 夹回 0 并**触发一次 scroll 事件**，
-贴底前的滚动监听会把 `stickToBottom` 置 false，于是后续的“贴到底部”第一步就被拦住了。
-现在“落地到底部”不再依赖 `stickToBottom`（并用 `_pinning` 屏蔽清空/追加引发的伪滚动事件），
-且在懒渲染与图片撑开后会重试几次。验证：模拟该场景后 `scrollTop` 会被赋值 4 次并停在底部。
+**Q：文章点开空白？**
+A：已修。原因是 Chromium 对 sandbox+srcdoc 在同一 iframe 上反复赋值有偶发不绘制
+的引擎 bug（同一篇第二次点开白屏）；现在每次打开重建 iframe 并走 blob URL 导航。
 
-> 模板改动后需要**重启服务**（Quart 缓存 Jinja 模板），并让浏览器强制刷新（⌘⇧R）。
+**Q：userSig 不是 60 天有效吗？**
+A：网页版实测几十分钟就过期。后台会自动换新并重连（顶栏状态会短暂变黄），
+无需人工干预；只有 centraltoken 也同时过期时才需要重新登录。
 
-**Q：老师栏（左栏）为什么底部不是最新一条？**
-A：已修。两个原因叠在一起：① API 对 `order=desc` 已返回时间正序，前端有多 `.reverse()` 了一次，
-变成新→旧，所以贴底后看到的“最后一条”实际上是当天最早的；② 最新那条被顶到了看不见的顶部。
-现在左右栏都是时间正序、贴底即最新（实测：首条 08:11 早盘预案，末条 15:25 最新回复）。
+**Q：看历史时还会弹「N 条新消息」吗？**
+A：不会。提示只在「最新/今天」视图且你往上翻时出现；近3天/近7天/全部、
+日历历史日期、搜索结果里新消息一律静默入库。
 
-**Q：用中文输入法打字，按回车确认候选词时消息直接被发出去了？**
-A：已修。原来的 `onSendKeydown` 只判断 `ev.key === "Enter"`，而“回车确认候选词”
-也是一次 Enter，于是被当成发送；更糟的是那个 `preventDefault()` 还会连带吃掉
-输入法的确认动作（你打的字根本没落进输入框）。
-
-坑在事件顺序：**Chromium（Edge/Chrome）是 `compositionend` → `keydown`**，
-所以在 keydown 里 `ev.isComposing` 已经是 `false`，单靠它挡不住；
-Safari/Firefox 的顺序又不一样。现在三种信号一起用（`isImeEnter()`）：
-
-1. `imeComposing` —— `compositionstart` 到 `compositionend` 之间
-2. `ev.isComposing` / `ev.keyCode === 229` —— 标准与旧版信号
-3. `compositionend` 之后 **80ms** 宽限窗口 —— 专门挡 Chromium 那次确认回车
-
-确认候选词的回车**不** `preventDefault()`，交给输入法正常提交；
-发送框（`onSendKeydown`）和搜索框（`onSearchKeydown`）都走这套判断。
-
-**Q：老师栏往上翻时滚动条抽搐、停一会又自动贴底？**
-A：有两个来源，都修了。
-
-① **自动贴底**：`onImgLoad()` 和 `onRealtimeMessage()` 以前都调 `scrollToBottom()`，
-而那是**同时滚左右两栏**的。所以你翻左栏时，右栏每来一条实时消息（IM 是活的）
-就把两栏又拽到底 —— 图像加载完也会触发一次。
-现在自动跟随一律走 `followList(那一栏)`：只动「本来就贴着底部」的那一栏。
-`scrollToBottom()` 只保留给用户主动动作（回到底部按钮、新消息提示条）。
-另外你已滚上去时，后台同步完成不再重载当前视图，只累加「N 条新消息」提示。
-“贴到底部”只在**加载/切天/切范围**时执行一次。
-
-② **滚动条抽搐**：`.msg` 的 `content-visibility:auto` 配合固定的
-`contain-intrinsic-size: 0 60px`，滚动时估算高度被真实高度替换导致 `scrollHeight` 反复变。
-现改为 `auto 64px`（现代浏览器会记住真实高度，旧的自动回退到固定值）。
-
-**Q：老师栏里 `{"brief":"早盘预案",...}` 是什么？是文件吗？**
-A：不是文件，是 **`msgType=2` 文章推送卡片** —— 老师每天发的两篇付费文章：
-盘前 `早盘预案`、盘后 `知识点小结`（七天共 9 条）。载荷 `{title, brief, sourceId,
-sourceTime, sourceUrl, mainImageUrl}`，`sourceUrl` 是小程序内 H5 路径
-（`/touguapp/tougu/index.html?path=/articleDetail&articleId=10064&...`），
-实测在 `www.zx0093.com` / `ht.zx0093.com` / `app.zx093.cn` 都是 404，**只能在小程序里打开**。
-现在渲染成卡片（标签 + 标题 + 时间 + 文章号），悬停可以看到原始路径。
-
-> 能不能点开？**不能，约牛自己也不能**：小程序里卡片点击只认 `msgContent.url / .link / .href`，
-> 而这个卡片里叫 `sourceUrl` → 落到 else 分支弹 toast「内参详情接入中」。
-> 我也试了 `product.zx093.com/yngp/yngp_app/article/queryArticleDetail.htm?articleId=<sourceId>`
-> （无需鉴权可调），但它**不是同一个 ID 空间**，拿 10064 查到的是 2023 年另一位老师的文章、正文还是空串。
-
-**Q：为什么看不到"VIP / 私聊回复 / 实时"标记了？**
-A：因为那几个标记是错的。它们来自消息记录里的 `privateMessageFlag`/`vipUser` 字段，
-而 IM 实时推送给的是**审核前**版本（这两个字段是占位值 `true`），REST 历史里 14,299 条全是 `false`。
-现在只显示数据上站得住的 `老师` 和 `回复`；"实时"标签直接去掉了（没有信息量）。
-
-**Q：怎么看到某一天的全部消息？**
-A：顶部栏的**日历**选那天（或用 ◀ 前一天 / 今天 / 后一天 ▶），该天消息会时间正序全部载入
-并停在最新处，往上就是当天的早盘。注意约牛只开放最近 7 天，往前翻到 09-12 就到底了
-（点"后一天"不会超过今天）。
-
-**Q：为什么打开只加载 1200 条，而不是全部？**
-A：在**范围模式**（近3天/近7天/全部）下，一天就 3000+ 条，全量渲染会让浏览器卡，
-所以首屏先取最新的 1200 条并停在底部，**滚到列表顶部会自动接着加载更早的 1000 条**。
-想看一整天就用顶部日历选那天，会把当天全部载入。
-
-**Q：顶部圆点红色 / 黄色？**
-A：红色 = `userSig` 过期（IM 登录被拒），重新调 `getUserSig` 拿新的；
-黄色 = 网络抖动，客户端会自动重连（指数退避，最长 60 秒）。
+**Q：老师栏（左栏）怎么没有消息了？**
+A：网页版把老师的 `user_type` 从 4 改成了 3，老判断漏掉了。现在全部 `IN (3,4)`。
 
 **Q：能回复某条消息吗？**
-A：**不能**。协议 §5 的 `sendMessage.htm` 只接受 `chatRoomId/msgType/msgContent` 三个字段，
-没有引用字段；老师那侧的 `quoteContent`/`toUserId` 是服务端在审核回复时写入的，
-客户端没有对应入口。界面上只做引用**展示**与跳转。
+A：不能。`sendMessage.htm` 只接受房间/类型/内容，没有引用字段；
+老师的 `quoteContent` 是服务端审核时写入的，客户端没有入口。
 
-**Q：服务为什么用 HTTPS + HTTP/2？**
-A：和 hexun 一致，多路复用下大量图片并发不互相阻塞。自签证书浏览器首次会提示，点继续即可。
+**Q：为什么用 HTTPS + HTTP/2？**
+A：多路复用下大量图片并发不互相阻塞。自签证书首次会提示，点继续即可。
 
-**Q：图片会重复下载吗？**
-A：不会。`/api/media` 按 URL 的 md5 命名缓存到 `data/cache/`，带一年强缓存头；
-新消息入库时还会后台预取头像与图片。
+**Q：模板改动后不生效？**
+A：Quart 缓存 Jinja 模板，需要**重启服务**，浏览器再强制刷新（⌘⇧R）。
 
 ---
 

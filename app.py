@@ -1125,8 +1125,152 @@ async def api_probe():
 #   + captchaVerifyParam（阿里云验证码票据，一次性、短时效）
 #   → POST account.zx093.cn/stoneserver/v1/account/accountPwdVerifyLogin.htm
 #   → data 就是 centraltoken（小程序把它 setStorageSync("token") 后当 centralToken 头用）
+@app.route("/api/logout", methods=["POST"])
+async def api_logout():
+    """退出登录：清凭证（centraltoken / IM / 我的资料），消息库与房间配置保留。"""
+    keys = ("centraltoken", "im_user_sig", "im_identifier", "im_sdk_app_id",
+            "im_group_id", "im_enabled", "my_user_id", "my_nick_name", "my_avatar")
+    with _db_lock:
+        for k in keys:
+            db.set_setting(conn, k, "")
+        try:
+            db.token_mark_expired(conn, reason="logout")
+        except Exception as e:                              # noqa: BLE001
+            print(f"[token] 退出收尾失败：{e}")
+    reset_sync_backoff()
+    restart_im()          # im_config 拿不到凭证 → IM 自动下线
+    broadcast({"type": "status", "im_state": "off", "im_detail": "已退出登录"})
+    print("[token] 已退出登录（凭证清空，消息库保留）", flush=True)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/login/qrcode", methods=["POST"])
+async def api_login_qrcode():
+    """生成微信扫码登录二维码。body: {teacher_id?}（默认用设置里的）。
+    返回 {qrcode: base64 jpg, auth_token}——前端持 auth_token 轮询 poll。"""
+    data = await request.get_json(force=True) or {}
+    teacher_id = int(data.get("teacher_id") or cfg().get("teacher_id") or 328)
+
+    def _gen() -> tuple[str, str, bytes]:
+        invite = (TouguClient(cfg().get("centraltoken", "")).get_invite_code(teacher_id)
+                  or "").strip() or "H8X9"
+        at = api.get_auth_token()
+        img = api.create_login_qrcode(at, invite)
+        return invite, at, img
+
+    try:
+        invite, at, img = await asyncio.to_thread(_gen)
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:                                    # noqa: BLE001
+        return jsonify({"error": f"二维码生成失败：{e}"}), 500
+    import base64
+    return jsonify({"qrcode": base64.b64encode(img).decode(), "auth_token": at,
+                    "invite": invite, "teacher_id": teacher_id})
+
+
+@app.route("/api/login/qrcode/poll", methods=["POST"])
+async def api_login_qrcode_poll():
+    """轮询扫码状态：未扫 {status:waiting}；确认后走 apply_centraltoken 并 {status:ok}。"""
+    data = await request.get_json(force=True) or {}
+    at = (data.get("auth_token") or "").strip()
+    teacher_id = int(data.get("teacher_id") or cfg().get("teacher_id") or 328)
+    if not at:
+        return jsonify({"error": "缺少 auth_token"}), 400
+    try:
+        token = await asyncio.to_thread(api.exchange_qrcode_token, at)
+    except AuthExpired:
+        return jsonify({"status": "expired", "error": "二维码已过期，请重新生成"})
+    except NiuLaiError as e:
+        return jsonify({"status": "error", "error": str(e)})
+    if not token:
+        return jsonify({"status": "waiting"})
+    out, err = await asyncio.to_thread(apply_centraltoken, token, teacher_id, "login")
+    if err:
+        return jsonify({"status": "error", "error": err})
+    return jsonify({"status": "ok", "user": out.get("user"),
+                    "room": (out.get("room") or {}).get("name", "")})
+
+
+# ===================== 已存账号（.env 的 NIULAI_SAVED_LOGINS，多账户） =====================
+SAVED_LOGINS_KEY = "NIULAI_SAVED_LOGINS"
+_ENV_PATH = os.path.join(BASE_DIR, ".env")
+
+
+def _read_saved_logins() -> list:
+    """[{account, password}]——直接读 .env 文件（不走 os.environ，改完即生效）。"""
+    if not os.path.exists(_ENV_PATH):
+        return []
+    for line in open(_ENV_PATH, encoding="utf-8"):
+        line = line.strip()
+        if line.startswith(SAVED_LOGINS_KEY + "="):
+            raw = line[len(SAVED_LOGINS_KEY) + 1:].strip().strip('"').strip("'")
+            try:
+                data = json.loads(raw)
+                return [x for x in data if isinstance(x, dict) and x.get("account")]
+            except Exception:                              # noqa: BLE001
+                return []
+    return []
+
+
+def _write_saved_logins(items: list):
+    """整键重写 NIULAI_SAVED_LOGINS=<json 单行>，.env 里其它行原样保留。"""
+    lines = []
+    if os.path.exists(_ENV_PATH):
+        lines = open(_ENV_PATH, encoding="utf-8").read().splitlines()
+    new = f"{SAVED_LOGINS_KEY}={json.dumps(items, ensure_ascii=False)}"
+    for i, l in enumerate(lines):
+        if l.strip().startswith(SAVED_LOGINS_KEY + "="):
+            lines[i] = new
+            break
+    else:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(new)
+    with open(_ENV_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+@app.route("/api/login/saved")
+async def api_saved_logins():
+    """历史账号列表（本机 .env，含已存密码——本机自用所以不脱敏）。"""
+    return jsonify({"logins": _read_saved_logins()})
+
+
+@app.route("/api/login/saved", methods=["POST"])
+async def api_save_login():
+    """登录成功后落盘：账号总是保存（多账户去重），密码按 save_password 勾选。"""
+    data = await request.get_json(force=True) or {}
+    account = (data.get("account") or "").strip()
+    password = data.get("password") or ""
+    save_password = bool(data.get("save_password", True))
+    if not account:
+        return jsonify({"error": "账号为空"}), 400
+    pwd = password if (save_password and password) else ""
+    now = int(time.time())
+    items = _read_saved_logins()
+    for it in items:
+        if it.get("account") == account:
+            it["password"] = pwd
+            it["used_at"] = now            # 记录最近一次登录时间，前端据此默认选中
+            break
+    else:
+        items.append({"account": account, "password": pwd, "used_at": now})
+    _write_saved_logins(items)
+    return jsonify({"ok": True, "saved_password": bool(pwd)})
+
+
+@app.route("/api/login/saved", methods=["DELETE"])
+async def api_delete_login():
+    data = await request.get_json(force=True) or {}
+    account = (data.get("account") or "").strip()
+    _write_saved_logins([x for x in _read_saved_logins() if x.get("account") != account])
+    return jsonify({"ok": True})
+
+
 @app.route("/api/login/password", methods=["POST"])
 async def api_login_password():
+    """账密登录（网页版链路）。成功即写 centraltoken。"""
     """账号密码登录 → 自动拿到 centraltoken 并完成配置。
 
     body: {account, password, captcha_verify_param, scene_id?}
@@ -1424,6 +1568,115 @@ async def api_sync_state():
     return jsonify(dict(_sync_state))
 
 
+@app.route("/api/article/<int:article_id>")
+async def api_article(article_id: int):
+    """研选文章正文（msgType=2 卡片点开后的内容，网页版接口）。"""
+    c = cfg()
+    teacher_id = int(c.get("teacher_id") or 0)
+    client = _client()
+    try:
+        d = await asyncio.to_thread(client.get_article, article_id, teacher_id)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    content = d.get("articleContent") or ""
+    pdf_path = ""
+    if d.get("articleType") == 2:
+        # PDF 型文章：content 是 {filePath} JSON，正文走 preview 接口换 URL
+        try:
+            pdf_path = json.loads(content).get("filePath", "")
+        except Exception:                              # noqa: BLE001
+            pdf_path = ""
+        if pdf_path:
+            try:
+                pdf_path = await asyncio.to_thread(client.get_article_preview, pdf_path)
+            except NiuLaiError:
+                pdf_path = ""
+    return jsonify({"articleId": d.get("articleId", article_id),
+                    "title": d.get("articleTitle", ""),
+                    "content": content if d.get("articleType") != 2 else "",
+                    "pdfUrl": pdf_path,
+                    "createTime": d.get("createTime", ""),
+                    "feeStatus": d.get("feeStatus", 0),
+                    "articleType": d.get("articleType", 0)})
+
+
+@app.route("/api/articles")
+async def api_articles():
+    """全部研选文章（网页版列表接口，?page= 分页，15/页）。"""
+    c = cfg()
+    teacher_id = int(c.get("teacher_id") or 0)
+    page = max(1, int(request.args.get("page") or 1))
+    client = _client()
+    try:
+        d = await asyncio.to_thread(client.get_articles, teacher_id, page)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请重新登录"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"page": page, "total": d.get("total", 0),
+                    "hasNextPage": bool(d.get("hasNextPage")),
+                    "articles": d.get("list") or []})
+
+
+@app.route("/api/pinned")
+async def api_pinned():
+    """房间置顶消息（pinnedListById）。拿不到就返回空，不打断主界面。"""
+    c = cfg()
+    room_id = int(c.get("room_id") or 0)
+    if not room_id:
+        return jsonify({"pins": []})
+    client = _client()
+    try:
+        pins = await asyncio.to_thread(client.get_pinned, room_id)
+    except (AuthExpired, NiuLaiError):
+        return jsonify({"pins": []})
+    return jsonify({"pins": pins or []})
+
+
+@app.route("/api/videos")
+async def api_videos():
+    """视频栏目 + 回放列表（网页版「视频」标签的取数）。
+    ?column_id= 省略时用第一个栏目；page 默认 1。"""
+    c = cfg()
+    teacher_id = int(c.get("teacher_id") or 0)
+    client = _client()
+    column_id = int(request.args.get("column_id") or 0)
+    page = max(1, int(request.args.get("page") or 1))
+    try:
+        columns = await asyncio.to_thread(client.get_video_columns, teacher_id)
+        if not column_id and columns:
+            column_id = int(columns[0].get("columnId") or 0)
+        playbacks = (await asyncio.to_thread(client.get_video_playbacks,
+                                             teacher_id, column_id, page)
+                     if column_id else [])
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"columns": columns, "columnId": column_id,
+                    "page": page, "playbacks": playbacks})
+
+
+@app.route("/api/video_play/<int:video_id>")
+async def api_video_play(video_id: int):
+    """回放播放信息：m3u8 直链（免签、CORS 全开，hls.js 可直接拉流）。"""
+    client = _client()
+    try:
+        d = await asyncio.to_thread(client.get_video_play, video_id)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    if not d.get("adaptiveUrl"):
+        return jsonify({"error": f"该视频没有可播地址（{d.get('title') or video_id}）"}), 404
+    return jsonify({"id": video_id, "title": d.get("title", ""),
+                    "m3u8": d["adaptiveUrl"],
+                    "webUrl": f"https://client.zx093.com/webktc/tougu/index.html"
+                              f"?path=/video&id={video_id}&teacherId={d.get('teacherId', '')}"})
+
+
 @app.route("/api/send", methods=["POST"])
 async def api_send():
     data = await request.get_json(force=True) or {}
@@ -1589,6 +1842,7 @@ async def startup():
     threading.Thread(target=_prefetch_worker, daemon=True).start()
     threading.Thread(target=_im_supervisor, daemon=True).start()
     threading.Thread(target=_sync_worker, daemon=True).start()
+    _sync_wake.set()        # 启动立刻拉一轮最新消息（原「同步最新」按钮的活，现在自动做）
     if MEDIA_AUTOFETCH:
         threading.Thread(target=_media_autofetch, daemon=True).start()
     c = cfg()
