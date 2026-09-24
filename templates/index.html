@@ -173,10 +173,12 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .day-sep::before, .day-sep::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .day-sep span { white-space: nowrap; }
 
-/* 曾用名弹窗 */
+/* 曾用名弹窗（pointer-events:none：弹窗不拦截鼠标，否则光标压到弹窗上会
+   触发 mouseleave→隐藏→再 enter→再弹出的死循环，看起来就是闪烁） */
 .nick-popup { position: fixed; background: var(--card); border: 1px solid var(--border);
   border-radius: 6px; padding: 8px 10px; min-width: 180px; max-width: 320px;
-  box-shadow: 0 3px 12px rgba(0,0,0,.15); z-index: 9999; font-size: 12px; }
+  box-shadow: 0 3px 12px rgba(0,0,0,.15); z-index: 9999; font-size: 12px;
+  pointer-events: none; }
 .nick-popup .pp-title { font-weight: 600; margin-bottom: 4px; color: var(--muted); }
 .nick-popup .pp-item { padding: 2px 0; display: flex; gap: 8px; }
 .nick-popup .pp-time { color: var(--muted); font-size: 11px; margin-left: auto; }
@@ -414,6 +416,8 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         <span id="videoPlayTitle" style="flex:1;font-weight:600;overflow:hidden;
           text-overflow:ellipsis;white-space:nowrap"></span>
         <a id="videoWebLink" href="#" target="_blank" style="font-size:12px;color:var(--accent)">官方页 ↗</a>
+        <a id="videoDl" href="#" download style="font-size:12px;color:var(--accent)"
+           title="下载最高清晰度 MP4（视频越长等得越久，完成后浏览器自动弹出保存）">⬇ 下载</a>
       </div>
       <video id="videoEl" controls playsinline
              style="flex:1;width:100%;min-height:0;background:#000;border-radius:6px"></video>
@@ -576,11 +580,15 @@ async function openArticle(articleId) {
       document.getElementById("articlePdf").href = d.pdfUrl;
       document.getElementById("articlePdf").style.display = "inline";
     }
-    // 给正文补基础排版：限宽 + 图片自适应，避免 Word HTML 撑破弹窗
+    // 正文图片改走本地代理：命中缓存不发网络，未命中由代理顺手下载落盘（断网可读）。
+    // iframe 是 blob 文档，相对路径解析不了，必须拼绝对地址。
+    const bodyHtml = (d.content || "<p>（无正文；PDF 型文章请点下方链接）</p>").replace(
+      /(<img\b[^>]*\bsrc=["'])(https?:\/\/[^"']+)(["'])/gi,
+      (m, a, u, z) => a + location.origin + mediaUrl(u, "image") + z);
     const html = `<!doctype html><meta charset="utf-8">
       <style>body{margin:16px auto;max-width:680px;font:15px/1.7 -apple-system,"PingFang SC",sans-serif;color:#222;word-break:break-word}
       img{max-width:100%;height:auto} table{max-width:100%}</style>
-      ${d.content || "<p>（无正文；PDF 型文章请点下方链接）</p>"}`;
+      ${bodyHtml}`;
     const body = document.getElementById("articleBody");
     body.innerHTML = "";
     const frame = document.createElement("iframe");
@@ -666,6 +674,7 @@ async function playVideo(id, teacherId) {
   document.getElementById("videoPlayTitle").textContent = "加载中…";
   document.getElementById("videoWebLink").href =
     `https://client.zx093.com/webktc/tougu/index.html?path=/video&id=${id}&teacherId=${teacherId}`;
+  document.getElementById("videoDl").href = `/api/video_download/${id}`;
   document.getElementById("videoListWrap").style.display = "none";
   player.style.display = "flex";
   try {

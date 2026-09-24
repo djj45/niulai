@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from datetime import datetime
@@ -126,6 +127,17 @@ CREATE TABLE IF NOT EXISTS token_log (
     reason     TEXT                 -- expired / replaced
 );
 CREATE INDEX IF NOT EXISTS idx_token_log_open ON token_log(ended_ts);
+CREATE TABLE IF NOT EXISTS articles (
+    article_id  INTEGER PRIMARY KEY,   -- 研选文章 ID（= 消息卡片里的 sourceId）
+    teacher_id  INTEGER DEFAULT 0,
+    title       TEXT DEFAULT '',
+    content     TEXT DEFAULT '',       -- 正文 HTML（Word 粘贴）；articleType=2 时是 {filePath} JSON
+    article_type INTEGER DEFAULT 0,    -- 0=富文本 2=PDF
+    pdf_url     TEXT DEFAULT '',       -- PDF 型换出来的预览地址
+    fee_status  INTEGER DEFAULT 0,
+    create_time TEXT DEFAULT '',
+    fetched_at  TEXT                   -- 本地抓取时间（判断新旧用）
+);
 """
 
 
@@ -655,6 +667,38 @@ def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int
     sql += " ORDER BY ts ASC LIMIT ?"
     params.append(size)
     return [_msg_to_dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+# ===================== 研选文章（本地缓存） =====================
+
+def get_article_cache(conn, article_id: int) -> dict | None:
+    """已落库的文章；没有返回 None。"""
+    r = conn.execute("SELECT * FROM articles WHERE article_id=?", (article_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def save_article_cache(conn, a: dict):
+    """文章落库：重复打开不再请求线上，断网也能读。"""
+    conn.execute(
+        "INSERT OR REPLACE INTO articles(article_id, teacher_id, title, content,"
+        " article_type, pdf_url, fee_status, create_time, fetched_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?)",
+        (a.get("articleId"), a.get("teacherId", 0), a.get("articleTitle", ""),
+         a.get("articleContent", ""), a.get("articleType", 0), a.get("pdfUrl", ""),
+         a.get("feeStatus", 0), a.get("createTime", ""), _now()))
+    conn.commit()
+
+
+def article_image_urls(conn) -> list:
+    """已落库文章正文里引用的图片地址（供媒体补齐，断网可读）。"""
+    out, seen = [], set()
+    for (content,) in conn.execute(
+            "SELECT content FROM articles WHERE article_type=0 AND content != ''"):
+        for u in re.findall(r'src=["\'](https?://[^"\']+)["\']', content or ""):
+            if u not in seen:
+                seen.add(u)
+                out.append(u)
+    return out
 
 
 def stats(conn, room_id: int | None = None) -> dict:

@@ -19,12 +19,14 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import threading
 import time
+from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
-from quart import Quart, abort, jsonify, render_template, request, send_file, websocket
+from quart import Quart, abort, after_this_request, jsonify, render_template, request, send_file, websocket
 
 import db
 import niulai_api as api
@@ -365,6 +367,7 @@ def media_targets() -> list:
         avatars = [r[0] for r in conn.execute(
             "SELECT DISTINCT avatar_url FROM users "
             "WHERE avatar_url IS NOT NULL AND avatar_url != ''")]
+        article_imgs = db.article_image_urls(conn)
     for mt, content in rows:
         try:
             obj = json.loads(content or "{}")
@@ -378,6 +381,8 @@ def media_targets() -> list:
             add(obj.get("mainImageUrl"), "image")   # 内参卡片封面（样本里为 null）
     for a in avatars:
         add(a, "avatar")
+    for u in article_imgs:
+        add(u, "image")                             # 已落库文章的正文配图
     return out
 
 
@@ -916,6 +921,9 @@ def sync_history(pages: int = 3, source_type: int = api.SRC_ROOM, stop_at_known:
     _sync_progress()
     print(f"[同步] {time.strftime('%H:%M:%S')} {mode}完成：{head}（{i} 次请求，取回 {fetched} 条，新增 {added_total} 条）",
           flush=True)
+    if added_total and not error:
+        # 新到的消息里可能有文章卡片：后台把未缓存的正文补齐（锁防重入，秒退）
+        threading.Thread(target=backfill_articles, daemon=True).start()
     return {"added": added_total, "fetched": fetched, "pages": _sync_state["pages"],
             "oldest": _sync_state["oldest"]}
 
@@ -1569,38 +1577,111 @@ async def api_sync_state():
     return jsonify(dict(_sync_state))
 
 
-@app.route("/api/article/<int:article_id>")
-async def api_article(article_id: int):
-    """研选文章正文（msgType=2 卡片点开后的内容，网页版接口）。"""
-    c = cfg()
-    teacher_id = int(c.get("teacher_id") or 0)
-    client = _client()
-    try:
-        d = await asyncio.to_thread(client.get_article, article_id, teacher_id)
-    except AuthExpired:
-        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
-    except NiuLaiError as e:
-        return jsonify({"error": str(e)}), 500
+def _load_article_online(client, article_id: int, teacher_id: int) -> dict:
+    """线上拉一篇文章详情，整理成 articles 表一行（含 PDF 预览地址换算）。"""
+    d = client.get_article(article_id, teacher_id)
     content = d.get("articleContent") or ""
     pdf_path = ""
     if d.get("articleType") == 2:
         # PDF 型文章：content 是 {filePath} JSON，正文走 preview 接口换 URL
         try:
             pdf_path = json.loads(content).get("filePath", "")
-        except Exception:                              # noqa: BLE001
+        except Exception:                                     # noqa: BLE001
             pdf_path = ""
         if pdf_path:
             try:
-                pdf_path = await asyncio.to_thread(client.get_article_preview, pdf_path)
+                pdf_path = client.get_article_preview(pdf_path)
             except NiuLaiError:
                 pdf_path = ""
-    return jsonify({"articleId": d.get("articleId", article_id),
-                    "title": d.get("articleTitle", ""),
-                    "content": content if d.get("articleType") != 2 else "",
-                    "pdfUrl": pdf_path,
-                    "createTime": d.get("createTime", ""),
-                    "feeStatus": d.get("feeStatus", 0),
-                    "articleType": d.get("articleType", 0)})
+    return {"articleId": d.get("articleId", article_id), "teacherId": teacher_id,
+            "articleTitle": d.get("articleTitle", ""), "articleContent": content,
+            "articleType": d.get("articleType", 0), "pdfUrl": pdf_path,
+            "feeStatus": d.get("feeStatus", 0), "createTime": d.get("createTime", "")}
+
+
+_article_backfill_lock = threading.Lock()
+
+
+def backfill_articles():
+    """把消息库里文章卡片（msgType=2）引用、还没落库的正文补齐。
+    之后断网 / centraltoken 过期也能读全文，正文图片随之进媒体补齐队列。"""
+    if not _article_backfill_lock.acquire(blocking=False):
+        return
+    try:
+        c = cfg()
+        if not c.get("centraltoken"):
+            return
+        teacher_id = int(c.get("teacher_id") or 0)
+        with _db_lock:
+            have = {r[0] for r in conn.execute("SELECT article_id FROM articles")}
+            cards = [r[0] for r in conn.execute(
+                "SELECT msg_content FROM messages WHERE msg_type=2")]
+        ids = []
+        for mc in cards:
+            try:
+                sid = int(json.loads(mc or "{}").get("sourceId") or 0)
+            except Exception:                                 # noqa: BLE001
+                continue
+            if sid and sid not in have and sid not in ids:
+                ids.append(sid)
+        if not ids:
+            return
+        print(f"[文章] 后台补正文：{len(ids)} 篇未缓存", flush=True)
+        client = _client()
+        ok = 0
+        for aid in ids[:100]:
+            try:
+                row = _load_article_online(client, aid, teacher_id)
+            except AuthExpired:
+                print("[文章] 补齐中止：登录失效", flush=True)
+                return
+            except Exception as e:                             # noqa: BLE001
+                print(f"[文章] #{aid} 失败：{e}", flush=True)
+                continue
+            with _db_lock:
+                db.save_article_cache(conn, row)
+            ok += 1
+            time.sleep(0.4)          # 别打挂人家
+        print(f"[文章] 补齐完成：{ok}/{len(ids)}", flush=True)
+    finally:
+        _article_backfill_lock.release()
+
+
+@app.route("/api/article/<int:article_id>")
+async def api_article(article_id: int):
+    """文章正文（msgType=2 卡片点开后的内容）。
+    本地已缓存直接返回（快、断网可用）；没有才走线上并落库。?refresh=1 强制重拉。"""
+    c = cfg()
+    teacher_id = int(c.get("teacher_id") or 0)
+    if request.args.get("refresh") != "1":
+        with _db_lock:
+            cached = db.get_article_cache(conn, article_id)
+        if cached:
+            return jsonify({"articleId": cached["article_id"],
+                            "title": cached["title"],
+                            "content": cached["content"] if cached["article_type"] != 2 else "",
+                            "pdfUrl": cached["pdf_url"],
+                            "createTime": cached["create_time"],
+                            "feeStatus": cached["fee_status"],
+                            "articleType": cached["article_type"],
+                            "cached": True})
+    client = _client()
+    try:
+        row = await asyncio.to_thread(_load_article_online, client, article_id, teacher_id)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    with _db_lock:
+        db.save_article_cache(conn, row)
+    return jsonify({"articleId": row["articleId"],
+                    "title": row["articleTitle"],
+                    "content": row["articleContent"] if row["articleType"] != 2 else "",
+                    "pdfUrl": row["pdfUrl"],
+                    "createTime": row["createTime"],
+                    "feeStatus": row["feeStatus"],
+                    "articleType": row["articleType"],
+                    "cached": False})
 
 
 @app.route("/api/articles")
@@ -1676,6 +1757,71 @@ async def api_video_play(video_id: int):
                     "m3u8": d["adaptiveUrl"],
                     "webUrl": f"https://client.zx093.com/webktc/tougu/index.html"
                               f"?path=/video&id={video_id}&teacherId={d.get('teacherId', '')}"})
+
+
+@app.route("/api/video_download/<int:video_id>")
+async def api_video_download(video_id: int):
+    """把回放下成 MP4：ffmpeg 拉最高码率的 HLS 流重封装（-c copy 不转码），
+    完成后以附件形式发给浏览器，临时文件响应结束即删。
+    注意 ffmpeg 子进程要剥掉代理环境变量（sing-box 关着时 http_proxy 会连不上）。"""
+    client = _client()
+    try:
+        d = await asyncio.to_thread(client.get_video_play, video_id)
+    except AuthExpired:
+        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    master = d.get("adaptiveUrl") or ""
+    if not master:
+        return jsonify({"error": "该视频没有可播地址"}), 404
+
+    def best_variant() -> str:
+        """master playlist 里挑 BANDWIDTH 最高的一档，拼成绝对地址。"""
+        s = client.session                    # trust_env=False：直连不吃系统代理
+        txt = s.get(master, timeout=15).text
+        lines = txt.splitlines()
+        best_bw, best_uri = 0, ""
+        for i, ln in enumerate(lines):
+            if ln.startswith("#EXT-X-STREAM-INF"):
+                m = re.search(r"BANDWIDTH=(\d+)", ln)
+                if m and i + 1 < len(lines) and int(m.group(1)) > best_bw:
+                    best_bw = int(m.group(1))
+                    best_uri = lines[i + 1].strip()
+        return urljoin(master, best_uri) if best_uri else master
+
+    def run_ffmpeg() -> str:
+        import subprocess
+        variant = best_variant()
+        os.makedirs(os.path.join(BASE_DIR, "data", "tmp"), exist_ok=True)
+        out = os.path.join(BASE_DIR, "data", "tmp", f"video_{video_id}_{int(time.time())}.mp4")
+        env = {k: v for k, v in os.environ.items()
+               if not k.lower().endswith("_proxy")}          # 直连，不吃 sing-box 环境变量
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-i", variant,
+             "-c", "copy", "-bsf:a", "aac_adtstoasc", out],
+            capture_output=True, text=True, timeout=1800, env=env)
+        if r.returncode != 0 or not os.path.exists(out):
+            raise NiuLaiError(f"ffmpeg 失败：{(r.stderr or '').strip()[:300]}")
+        return out
+
+    try:
+        out = await asyncio.to_thread(run_ffmpeg)
+    except NiuLaiError as e:
+        return jsonify({"error": str(e)}), 500
+    except Exception as e:                                    # noqa: BLE001
+        return jsonify({"error": f"下载失败：{e}"}) , 500
+    title = re.sub(r'[\\/:*?"<>|\s]+', "_", (d.get("title") or f"video_{video_id}").strip())
+    name = f"{title}_{video_id}.mp4"
+
+    @after_this_request
+    async def _cleanup(resp):
+        try:
+            os.remove(out)
+        except OSError:
+            pass
+        return resp
+
+    return await send_file(out, mimetype="video/mp4", as_attachment=True, download_name=name)
 
 
 @app.route("/api/send", methods=["POST"])
@@ -1846,6 +1992,9 @@ async def startup():
     _sync_wake.set()        # 启动立刻拉一轮最新消息（原「同步最新」按钮的活，现在自动做）
     if MEDIA_AUTOFETCH:
         threading.Thread(target=_media_autofetch, daemon=True).start()
+    # 存量文章卡片（msgType=2）的正文补齐——同步新增 0 条时上面那条钩子不会触发，
+    # 这里兜底跑一次（锁防重入，已缓存秒退）
+    threading.Thread(target=backfill_articles, daemon=True).start()
     c = cfg()
     print("=" * 56)
     print("约牛聊天室 Web 服务")
