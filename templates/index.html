@@ -282,8 +282,8 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <button onclick="syncFull()" id="fullSyncBtn" title="全量同步：翻到最早">⏬ 全量</button>
   <button onclick="showVideos()" id="videoBtn" title="老师的视频课（栏目与回放），弹窗内直接播放">📺 视频</button>
   <button onclick="showArticles()" id="articleBtn" title="老师的全部研选文章，点击阅读">📚 文章</button>
-  <button onclick="backupDB()">💾 备份</button>
-  <button onclick="showStats()">📊 统计</button>
+  <button onclick="backupDB()" title="把 SQLite 消息库复制到 data/backups/（图片缓存不在内，想留自己拷 data/cache）">💾 备份</button>
+  <button onclick="showStats()" title="各天消息数、老师消息分类、媒体本地化进度、后台同步节奏">📊 统计</button>
   <button onclick="logout()" id="logoutBtn" title="清掉本机保存的登录凭证（不影响消息库），回到登录页">🚪 退出</button>
 </div>
 <div class="sync-bar" id="syncBar">
