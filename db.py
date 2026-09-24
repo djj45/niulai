@@ -630,6 +630,14 @@ def query_messages(conn, room_id: int | None = None, date: str = "", start_ts: i
 
 def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int = 0,
                     start_date: str = "", end_date: str = "", size: int = 300) -> list:
+    # 前端把日期传成 20260920（parseRange 去掉了横线），库里 msg_date 是
+    # 2026-09-20 08:11:23 —— 不归一的话字符串比较里 '-'<'0'，全部消息都被滤掉，
+    # 表现就是「带日期的搜索永远暂无消息」。这里两种输入都接受。
+    def _d(s: str) -> str:
+        d8 = (s or "").replace("-", "")[:8]
+        return f"{d8[:4]}-{d8[4:6]}-{d8[6:8]}" if len(d8) == 8 else ""
+
+    sd, ed = _d(start_date), _d(end_date)
     sql = "SELECT * FROM messages WHERE msg_content LIKE ?"
     params: list = [f"%{keyword}%"]
     if room_id:
@@ -638,12 +646,12 @@ def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int
     if user_id:
         sql += " AND user_id=?"
         params.append(user_id)
-    if start_date:
+    if sd:
         sql += " AND msg_date>=?"
-        params.append(start_date)
-    if end_date:
+        params.append(sd + " 00:00:00")
+    if ed:
         sql += " AND msg_date<=?"
-        params.append(end_date + " 23:59:59")
+        params.append(ed + " 23:59:59")
     sql += " ORDER BY ts ASC LIMIT ?"
     params.append(size)
     return [_msg_to_dict(r) for r in conn.execute(sql, params).fetchall()]

@@ -315,9 +315,9 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         <button onclick="doSearch()">搜索</button>
         <button onclick="clearSearch()">清除</button>
         <span style="color:var(--muted);font-size:12px">日期</span>
-        <input type="date" id="searchStart" style="width:130px">
+        <input type="date" id="searchStart" style="width:130px" onchange="onSearchDateChange()" title="不选 = 最早">
         <span>~</span>
-        <input type="date" id="searchEnd" style="width:130px">
+        <input type="date" id="searchEnd" style="width:130px" onchange="onSearchDateChange()" title="不选 = 今天">
       </div>
       <div class="row quick-times">
         <span style="color:var(--muted);font-size:12px">快捷定位</span>
@@ -1219,8 +1219,8 @@ async function doSearch() {
   if (uid) url.searchParams.set("user_id", uid);
   const s = parseRange(document.getElementById("searchStart").value);
   const e = parseRange(document.getElementById("searchEnd").value);
-  if (s) url.searchParams.set("start_date", s);
-  if (e) url.searchParams.set("end_date", e);
+  if (s) url.searchParams.set("start_date", s);      // 不选开始 = 最早（等价不设下限）
+  url.searchParams.set("end_date", e || todayStr().replace(/-/g, ""));   // 不选结束 = 今天
   const r = await fetch(url);
   const d = await r.json();
   if (d.error) { alert(d.error); return; }
@@ -1229,6 +1229,13 @@ async function doSearch() {
   renderMessages(d.messages || [], document.getElementById("allList"), kw);
   document.getElementById("allCount").textContent = "搜索命中 " + (d.total || 0) + " 条";
   document.getElementById("clearBtn").classList.add("show");
+}
+
+/** 改了搜索日期立即重搜（有搜索词/用户ID时）；没有就先不动视图 */
+function onSearchDateChange() {
+  const kw = document.getElementById("searchInput").value.trim();
+  const uid = document.getElementById("userIdInput").value.trim();
+  if (kw || uid) doSearch();
 }
 
 function clearSearch() {
