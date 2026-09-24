@@ -20,13 +20,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import threading
 import time
 from urllib.parse import urljoin
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
-from quart import Quart, abort, after_this_request, jsonify, render_template, request, send_file, websocket
+from quart import Quart, abort, jsonify, render_template, request, send_file, websocket
 
 import db
 import niulai_api as api
@@ -1759,69 +1760,137 @@ async def api_video_play(video_id: int):
                               f"?path=/video&id={video_id}&teacherId={d.get('teacherId', '')}"})
 
 
-@app.route("/api/video_download/<int:video_id>")
-async def api_video_download(video_id: int):
-    """把回放下成 MP4：ffmpeg 拉最高码率的 HLS 流重封装（-c copy 不转码），
-    完成后以附件形式发给浏览器，临时文件响应结束即删。
-    注意 ffmpeg 子进程要剥掉代理环境变量（sing-box 关着时 http_proxy 会连不上）。"""
-    client = _client()
-    try:
-        d = await asyncio.to_thread(client.get_video_play, video_id)
-    except AuthExpired:
-        return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
-    except NiuLaiError as e:
-        return jsonify({"error": str(e)}), 500
-    master = d.get("adaptiveUrl") or ""
-    if not master:
-        return jsonify({"error": "该视频没有可播地址"}), 404
+# ===================== 视频下载（后台 ffmpeg 任务 + 轮询 + 取文件三段式） =====================
+# 直接 <a href> 指到下载接口的问题是：ffmpeg 一出错后端只能回一段 JSON，
+# 浏览器把它当文件存成 7004.html 之类的名字，真实原因全被吞掉。
+# 改成任务式：POST 起任务 → 前端轮询 status → done 后再从 file 接口拿 MP4，
+# 失败原因可以明明白白 alert 出来。
+FFMPEG = shutil.which("ffmpeg") or next(
+    (p for p in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg",
+                 "/opt/local/bin/ffmpeg", "/usr/bin/ffmpeg") if os.path.exists(p)), "")
+_video_jobs: dict = {}                 # jid -> {id, video_id, state, error, path, name, started}
+_video_jobs_lock = threading.Lock()
 
-    def best_variant() -> str:
-        """master playlist 里挑 BANDWIDTH 最高的一档，拼成绝对地址。"""
-        s = client.session                    # trust_env=False：直连不吃系统代理
-        txt = s.get(master, timeout=15).text
+
+def _remove_quiet(path: str):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _video_job_prune():
+    """清掉一小时前的旧任务及其临时文件；顺带扫掉 data/tmp 里被遗忘的残留。"""
+    now = time.time()
+    for jid in list(_video_jobs):
+        j = _video_jobs[jid]
+        if now - j["started"] > 3600 and j["state"] != "running":
+            if j.get("path"):
+                _remove_quiet(j["path"])
+            _video_jobs.pop(jid, None)
+    tmpdir = os.path.join(BASE_DIR, "data", "tmp")
+    if os.path.isdir(tmpdir):
+        for f in os.listdir(tmpdir):
+            p = os.path.join(tmpdir, f)
+            if f.startswith("video_"):
+                try:
+                    if now - os.path.getmtime(p) > 3600:
+                        os.remove(p)
+                except OSError:
+                    pass
+
+
+def _video_job_run(jid: str, video_id: int):
+    """后台线程：拿播放地址 → 选最高码率 → ffmpeg 重封装成 MP4。"""
+    job = _video_jobs[jid]
+    try:
+        if not FFMPEG:
+            raise NiuLaiError("本机没找到 ffmpeg（试过 PATH 和 /opt/homebrew/bin 等常见位置）")
+        client = _client()
+        d = client.get_video_play(video_id)
+        master = d.get("adaptiveUrl") or ""
+        if not master:
+            raise NiuLaiError("该视频没有可播地址")
+        # master playlist 里挑 BANDWIDTH 最高的一档，拼成绝对地址
+        txt = client.session.get(master, timeout=15).text
         lines = txt.splitlines()
         best_bw, best_uri = 0, ""
         for i, ln in enumerate(lines):
             if ln.startswith("#EXT-X-STREAM-INF"):
                 m = re.search(r"BANDWIDTH=(\d+)", ln)
                 if m and i + 1 < len(lines) and int(m.group(1)) > best_bw:
-                    best_bw = int(m.group(1))
-                    best_uri = lines[i + 1].strip()
-        return urljoin(master, best_uri) if best_uri else master
+                    best_bw, best_uri = int(m.group(1)), lines[i + 1].strip()
+        variant = urljoin(master, best_uri) if best_uri else master
 
-    def run_ffmpeg() -> str:
         import subprocess
-        variant = best_variant()
         os.makedirs(os.path.join(BASE_DIR, "data", "tmp"), exist_ok=True)
         out = os.path.join(BASE_DIR, "data", "tmp", f"video_{video_id}_{int(time.time())}.mp4")
         env = {k: v for k, v in os.environ.items()
-               if not k.lower().endswith("_proxy")}          # 直连，不吃 sing-box 环境变量
+               if not k.lower().endswith("_proxy")}      # 直连，不吃 sing-box 环境变量
+        print(f"[视频] 下载 #{video_id} 开始（{os.path.basename(variant)}）", flush=True)
         r = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-i", variant,
+            [FFMPEG, "-y", "-loglevel", "error", "-i", variant,
              "-c", "copy", "-bsf:a", "aac_adtstoasc", out],
             capture_output=True, text=True, timeout=1800, env=env)
         if r.returncode != 0 or not os.path.exists(out):
-            raise NiuLaiError(f"ffmpeg 失败：{(r.stderr or '').strip()[:300]}")
-        return out
+            raise NiuLaiError(f"ffmpeg 失败：{(r.stderr or '').strip()[:200]}")
+        title = re.sub(r'[\\/:*?"<>|\s]+', "_", (d.get("title") or f"video_{video_id}").strip())
+        job.update(state="done", path=out, name=f"{title}_{video_id}.mp4", error="")
+        print(f"[视频] 下载 #{video_id} 完成 → {job['name']} "
+              f"({os.path.getsize(out) // 1048576} MB)", flush=True)
+    except Exception as e:                               # noqa: BLE001
+        job.update(state="error", error=str(e)[:300])
+        print(f"[视频] 下载 #{video_id} 失败：{e}", flush=True)
 
-    try:
-        out = await asyncio.to_thread(run_ffmpeg)
-    except NiuLaiError as e:
-        return jsonify({"error": str(e)}), 500
-    except Exception as e:                                    # noqa: BLE001
-        return jsonify({"error": f"下载失败：{e}"}) , 500
-    title = re.sub(r'[\\/:*?"<>|\s]+', "_", (d.get("title") or f"video_{video_id}").strip())
-    name = f"{title}_{video_id}.mp4"
 
-    @after_this_request
-    async def _cleanup(resp):
-        try:
-            os.remove(out)
-        except OSError:
-            pass
-        return resp
+@app.route("/api/video_download/<int:video_id>", methods=["POST"])
+async def api_video_download_start(video_id: int):
+    """起一个下载任务；同一视频进行中/已完成的任务直接复用。"""
+    with _video_jobs_lock:
+        _video_job_prune()
+        for j in _video_jobs.values():
+            if j["video_id"] == video_id and j["state"] in ("running", "done"):
+                return jsonify({"job": j["id"], "state": j["state"]})
+        if not FFMPEG:
+            # 放在复用检查之后：已完成的任务直接发旧文件，根本不需要 ffmpeg。
+            # 缺 ffmpeg 时不要在后台线程里报错——点下去立刻告诉用户。
+            return jsonify({"error": "本机没找到 ffmpeg（试过 PATH 和 "
+                                     "/opt/homebrew/bin、/usr/local/bin 等常见位置），"
+                                     "装好后重启服务再下载"}), 503
+        jid = f"{video_id}_{int(time.time() * 1000)}"
+        _video_jobs[jid] = {"id": jid, "video_id": video_id, "state": "running",
+                            "error": "", "path": "", "name": "", "started": time.time()}
+    threading.Thread(target=_video_job_run, args=(jid, video_id), daemon=True).start()
+    return jsonify({"job": jid, "state": "running"})
 
-    return await send_file(out, mimetype="video/mp4", as_attachment=True, download_name=name)
+
+@app.route("/api/video_download/status/<jid>")
+async def api_video_download_status(jid: str):
+    with _video_jobs_lock:
+        j = _video_jobs.get(jid)
+    if not j:
+        return jsonify({"error": "任务不存在（可能已过期清理）"}), 404
+    # 必须把 job 一起回给前端：轮询时前端要用它拼下一个 status 地址
+    return jsonify({"job": j["id"], "state": j["state"],
+                    "error": j["error"], "name": j["name"]})
+
+
+@app.route("/api/video_download/file/<jid>")
+async def api_video_download_file(jid: str):
+    """任务完成后从这里拿 MP4（浏览器原生下载，从磁盘流式发）。"""
+    with _video_jobs_lock:
+        j = _video_jobs.get(jid)
+        if not j or j["state"] != "done" or not j.get("path"):
+            return jsonify({"error": "文件还没准备好或任务已失败"}), 409
+        path, name = j["path"], j["name"]
+        if not os.path.exists(path):       # 文件被清了就丢掉任务，让下次点击重转
+            _video_jobs.pop(jid, None)
+            return jsonify({"error": "临时文件已被清理，请重新下载"}), 409
+    # 这里不能 pop：send_file 是懒读盘（发正文时才 open），而且浏览器重试、
+    # HEAD 预检、同一视频重复下载都会再打到这个接口——pop 掉就变成 409。
+    # 文件统一交给 _video_job_prune 过期清理（1 小时）。
+    # 注意：Quart 的参数名是 attachment_filename（Flask 才叫 download_name）
+    return await send_file(path, mimetype="video/mp4", as_attachment=True, attachment_filename=name)
 
 
 @app.route("/api/send", methods=["POST"])

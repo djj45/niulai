@@ -416,8 +416,9 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         <span id="videoPlayTitle" style="flex:1;font-weight:600;overflow:hidden;
           text-overflow:ellipsis;white-space:nowrap"></span>
         <a id="videoWebLink" href="#" target="_blank" style="font-size:12px;color:var(--accent)">官方页 ↗</a>
-        <a id="videoDl" href="#" download style="font-size:12px;color:var(--accent)"
-           title="下载最高清晰度 MP4（视频越长等得越久，完成后浏览器自动弹出保存）">⬇ 下载</a>
+        <a id="videoDl" href="javascript:void(0)" onclick="downloadVideo()"
+           style="font-size:12px;color:var(--accent);cursor:pointer"
+           title="下载最高清晰度 MP4：后台转好后浏览器自动保存；失败会弹出具体原因">⬇ 下载</a>
       </div>
       <video id="videoEl" controls playsinline
              style="flex:1;width:100%;min-height:0;background:#000;border-radius:6px"></video>
@@ -611,6 +612,7 @@ function closeArticle() { document.getElementById("articleModal").style.display 
 // ===================== 视频课（列表 + 弹窗内直接播放） =====================
 const _videoState = { columnId: 0, page: 0, items: [], busy: false, done: false };
 let _hls = null;
+let _curVideoId = 0;                 // 当前正在播放的视频（下载按钮用）
 
 async function showVideos() {
   document.getElementById("videoModal").style.display = "flex";
@@ -674,7 +676,7 @@ async function playVideo(id, teacherId) {
   document.getElementById("videoPlayTitle").textContent = "加载中…";
   document.getElementById("videoWebLink").href =
     `https://client.zx093.com/webktc/tougu/index.html?path=/video&id=${id}&teacherId=${teacherId}`;
-  document.getElementById("videoDl").href = `/api/video_download/${id}`;
+  _curVideoId = id;
   document.getElementById("videoListWrap").style.display = "none";
   player.style.display = "flex";
   try {
@@ -703,6 +705,51 @@ function videoBackToList() {
   document.getElementById("videoPlayer").style.display = "none";
   document.getElementById("videoListWrap").style.display = "flex";
   document.getElementById("videoHead").textContent = "📺 视频课";
+}
+
+/** 视频下载：POST 起后台任务 → 轮询状态 → 完成后交给浏览器原生下载。
+ *  失败把后端的真实原因 alert 出来（以前 <a> 直连，错误 JSON 被存成 7004.html）。
+ *  注意：轮询地址要用本地保存的 job id，status 响应里的 job 字段只是兜底。 */
+async function downloadVideo() {
+  const id = _curVideoId;
+  if (!id) return;
+  const btn = document.getElementById("videoDl");
+  if (btn.dataset.busy) return;
+  btn.dataset.busy = "1";
+  const label = btn.textContent;
+  try {
+    const res = await fetch(`/api/video_download/${id}`, { method: "POST" });
+    let d = await res.json();
+    if (!res.ok || !d.job) throw new Error(d.error || `HTTP ${res.status}`);
+    const jid = d.job;                       // 固定住，别用 d.job 拼下一轮
+    while (d.state === "running") {
+      btn.textContent = "⏳ 转换中…";
+      await new Promise(r => setTimeout(r, 2000));
+      const sres = await fetch(`/api/video_download/status/${jid}`);
+      d = await sres.json();
+      if (!sres.ok) throw new Error(d.error || `HTTP ${sres.status}`);
+    }
+    if (d.state !== "done") { alert("下载失败：" + (d.error || "未知原因")); return; }
+    const url = `/api/video_download/file/${jid}`;
+    const head = await fetch(url, { method: "HEAD" });   // 预检：拿不到文件就别静默失败
+    if (!head.ok) {
+      let msg = `HTTP ${head.status}`;
+      try { msg = (await head.json()).error || msg; } catch (_) { /* 非 JSON 就用状态码 */ }
+      alert("下载失败：" + msg);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = d.name || "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) {
+    alert("下载失败：" + (e && e.message ? e.message : e));
+  } finally {
+    delete btn.dataset.busy;
+    btn.textContent = label;
+  }
 }
 function closeVideos() {
   videoBackToList();
