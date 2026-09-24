@@ -935,40 +935,41 @@ def _known_ids(room_id: int, items: list) -> set:
 
 # ===================== 同步节奏（自适应） =====================
 # IM 是主通道（秒级），REST 只负责「补漏 + 校正」。间隔按 IM 健康度来定：
-SYNC_IV_IM_OK = 300         # IM online：5 分钟核对一次就够
 SYNC_IV_IM_UNSTABLE = 30    # IM 正在连 / 刚断：30 秒（很可能刚漏消息）
 SYNC_IV_NO_IM = 60          # 没配 IM 或凭证失效：REST 是唯一通道，1 分钟一次
 
 
-def _sync_interval() -> tuple[float, str]:
-    """按 IM 状态给出下次轮询间隔（秒）与原因（供 /api/status 显示）。"""
+def _sync_interval() -> tuple[int, str]:
+    """下次轮询间隔（秒）与原因。**IM 在线时返回 0 = 不定时轮询**：
+    推送已经是主通道，同步改成纯事件驱动（启动时一次 + IM 重连成功时一次）。
+    只有 IM 不可用（没有推送可收）才保留定时轮询兜底。"""
     with _im_status_lock:
         state = _im_state.get("state") or "off"
     if state == "online":
-        return SYNC_IV_IM_OK, "IM 在线，定时核对"
+        return 0, "IM 在线，不轮询（启动/重连时自动拉）"
     if state in ("off", "login_failed"):
-        return SYNC_IV_NO_IM, "IM 不可用，REST 为主"
+        return SYNC_IV_NO_IM, "IM 不可用，REST 为主（1 分钟一次）"
     return SYNC_IV_IM_UNSTABLE, f"IM {state}，积极补漏"
 
 
 def _sync_worker():
-    """后台增量同步（**自适应节奏**）。
+    """后台增量同步（**事件驱动为主**）。
 
-    IM 推送是主通道（秒级），这里只做「补漏 + 校正」：
-      - IM 客户端没有实现离线补拉，断线/重启窗口里的消息只能靠 REST 找回来
-      - IM 推送的 privateMessageFlag/vipUser/auditStatus 是审核前占位值，REST 才权威
-    间隔按 IM 健康度自适应（见 _sync_interval），IM 正常时不浪费请求；
-    IM 刚重连成功会被 _sync_wake 立刻叫醒补一次。
+    IM 推送是主通道（秒级），这里只做「补漏」：
+      - 启动时拉一次当天（startup 里 _sync_wake.set()）
+      - IM 重连成功立刻补一次（断线窗口里的消息 IM 不补发，只能靠 REST 找回）
+      - IM 不可用（off/login_failed）时退回 1 分钟轮询——那会儿没有推送可收
     登录失效后 10 分钟内不再重试（避免无意义的错误日志），用户更新 token 后立即恢复。
     """
     while True:
         iv, why = _sync_interval()
         _sync_state["interval"] = int(iv)
         _sync_state["interval_reason"] = why
-        woken = _sync_wake.wait(iv)          # 等到点，或被「IM 重连」提前叫醒
+        if iv:
+            _sync_wake.wait(iv)                # IM 不可用：定时兜底
+        else:
+            _sync_wake.wait()                  # IM 在线：不定时，纯等事件（启动/重连）
         _sync_wake.clear()
-        if woken:
-            _sync_state["interval_reason"] = "IM 重连，立刻补漏"
         c = cfg()
         if not c.get("centraltoken") or not c.get("room_id"):
             continue
@@ -981,7 +982,7 @@ def _sync_worker():
         try:
             r = sync_history(pages=2)        # 追上就停在第 1 页，见 sync_history 的 stop_at_known
             if r.get("added"):
-                broadcast({"type": "synced", "added": r["added"]})
+                broadcast({"type": "synced", "added": r["added"], "mode": "incremental"})
         except Exception as e:
             print(f"[同步] 失败：{e}")
         finally:

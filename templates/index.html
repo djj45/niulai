@@ -1543,6 +1543,7 @@ function connectWS() {
     else if (d.type === "synced") {
       if (d.error) console.warn("同步失败：" + d.error);
       else onSyncProgress({ running: false, done: true, added: d.added || 0,
+                            mode: d.mode,
                             detail: d.pages != null
                               ? `完成：${d.pages || 0} 次请求 ${d.fetched || 0} 条，新增 ${d.added || 0} 条`
                               : `已补拉 ${d.added || 0} 条` });
@@ -1660,8 +1661,10 @@ async function loadStatus() {
     const iv = d.sync.interval || 0;
     window._syncIvText = `后台自动核对：每 ${iv ? iv + " 秒" : "-"}（${d.sync.interval_reason || "-"}）`;
   }
-  // 同步进度（刷新页面时如果后台还在跑，也能接上）
-  if (d.sync && d.sync.running) { onSyncProgress(d.sync); startSyncPolling(); }
+  // 同步进度（刷新页面时如果后台还在跑，也能接上；后台增量不轮询不打扰）
+  if (d.sync && d.sync.running && d.sync.mode !== "incremental") {
+    onSyncProgress(d.sync); startSyncPolling();
+  }
   else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
   const banner = document.getElementById("warnBanner");
   const warns = [];
@@ -1737,20 +1740,24 @@ function stopSyncPolling() {
   if (_syncPollTimer) { clearInterval(_syncPollTimer); _syncPollTimer = null; }
 }
 
-/** 同步进度（WebSocket 的 sync_progress 驱动，轮询兜底） */
+/** 同步进度（WebSocket 的 sync_progress 驱动，轮询兜底）。
+ *  后台增量（mode=incremental：启动自动拉 / IM 重连补漏 / 无 IM 兜底轮询）完全不在
+ *  界面显示——进度条和重渲染都会打扰阅读，后台日志里有记录就够了。
+ *  唯一例外：增量真找到新消息（added>0）时仍然刷新视图/弹提示。 */
 let _lastFinishAt = 0;
 function onSyncProgress(p) {
+  const bg = p.mode === "incremental";
   if (!p.running && p.done) {
+    if (bg && !(p.added > 0)) return;         // 后台增量 0 新增：彻底安静
     document.getElementById("syncText").textContent = p.detail || "同步完成";
     document.getElementById("syncFill").style.width = "100%";
-    // 没有新增就到此为止：后台核对每 30~300 秒收尾、IM 重连补漏收尾都会广播
-    // 一次"完成"，为 0 条新增整页重渲染（老师栏滚动被重置——"抽搐"的来源）。
-    if (!(p.added > 0)) { setTimeout(hideSyncBar, 4000); return; }
+    // 没有新增就到此为止：收尾广播为 0 条新增整页重渲染（老师栏滚动被重置——"抽搐"的来源）。
+    if (!(p.added > 0)) { if (!bg) setTimeout(hideSyncBar, 4000); return; }
     // 有新增时，完成时刻后端会连发多帧（sync_history 收尾、synced 结果、_bg 收尾），
     // 刷新视图这类副作用 5 秒窗口内只做一次——否则连打 3 对 /api/messages。
     if (Date.now() - _lastFinishAt < 5000) return;
     _lastFinishAt = Date.now();
-    setTimeout(hideSyncBar, 4000);
+    if (!bg) setTimeout(hideSyncBar, 4000);
     // 你已经滚上去在翻历史时不要重载当前视图 —— 重载会重新渲染并按「切换视图」
     // 的规则贴到底，看起来就是“过一会儿又自己跳到底了”。新消息本来就会由 IM 推过来。
     if (_follow.allList) loadMessages();
@@ -1762,6 +1769,7 @@ function onSyncProgress(p) {
     }
     return;
   }
+  if (bg) return;                             // 后台增量进行中：不显示进度条
   showSyncBar();
   const pages = p.pages || 0, fetched = p.fetched || 0;
   document.getElementById("syncText").textContent =
