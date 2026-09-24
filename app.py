@@ -649,6 +649,7 @@ _im_reload = threading.Event()
 _im_status_lock = threading.Lock()
 # 「IM 重连成功」时用它把同步线程立刻叫醒（那一刻最需要补漏，见 _sync_worker）
 _sync_wake = threading.Event()
+_sync_deep_done = False           # 开机/换 token 后的第一次同步做「深拉到今天 0 点」
 
 
 def im_config() -> dict | None:
@@ -780,7 +781,10 @@ def restart_im():
 
 
 def reset_sync_backoff():
-    """拿到新 centraltoken 后清掉失效标记，否则同步会被退避挡着（最长 10 分钟）。"""
+    """拿到新 centraltoken 后清掉失效标记，否则同步会被退避挡着（最长 10 分钟）。
+    同时把「深拉」标志复位：失效期间的窟窿要靠开机式深拉补回来。"""
+    global _sync_deep_done
+    _sync_deep_done = False
     _sync_state["auth_failed"] = False
     _sync_state["next_try"] = 0.0
     _sync_state["detail"] = ""
@@ -989,7 +993,17 @@ def _sync_worker():
                 continue
             _sync_state["running"] = True
         try:
-            r = sync_history(pages=2)        # 追上就停在第 1 页，见 sync_history 的 stop_at_known
+            global _sync_deep_done
+            if not _sync_deep_done:
+                # 开机（或刚拿到 token）后的第一次同步做「深拉」：从最新一直翻到今天 0 点、
+                # 不因已知而停。常规增量只翻 2 页且见已有即停——它跳不过已知块，
+                # 中午才登录的话上午的窟窿永远补不上（实测：某天 00:00~11:11 全缺）。
+                r = sync_history(pages=10, stop_at_known=False,
+                                 since_date=time.strftime("%Y-%m-%d"))
+                if not r.get("error"):
+                    _sync_deep_done = True
+            else:
+                r = sync_history(pages=2)    # 追上就停在第 1 页，见 sync_history 的 stop_at_known
             if r.get("added"):
                 broadcast({"type": "synced", "added": r["added"], "mode": "incremental"})
         except Exception as e:
