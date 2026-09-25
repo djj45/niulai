@@ -109,7 +109,8 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .msg .tag { font-size: 10px; padding: 0 4px; border-radius: 2px; color: #fff; background: #1890ff; }
 .msg .tag.t { background: var(--teacher); }
 .msg .tag.r { background: #fa8c16; }
-.msg .tag.p { background: #8c8c8c; }
+.msg .tag.p { background: #8c8c8c; cursor: help; }
+.msg .tag.p.stale { background: #cf1322; }
 .msg .alias-badge { font-size: 10px; background: #ffd666; color: #874d00;
   border-radius: 3px; padding: 0 3px; font-weight: 400; }
 .msg .quote { font-size: 12px; color: var(--muted); background: #f5f5f5;
@@ -995,6 +996,25 @@ function renderContent(m, kw) {
   return esc(text);
 }
 
+/** 你发的消息还没过审（约牛标 auditStatus=0，别人暂时看不到）。
+ *  两天内：「审核中」，后台每 2 分钟复查，过审后标签自动消失；
+ *  超过两天仍是 0：「未过审」，基本就是没通过。 */
+const AUDIT_STALE_SEC = 2 * 86400;
+function auditTag(m) {
+  const age = Date.now() / 1000 - (m.ts || 0);
+  return age < AUDIT_STALE_SEC
+    ? '<span class="tag p audit-tag" title="约牛还没审核通过，别人暂时看不到；后台会定期复查，通过后标签自动消失">审核中</span>'
+    : '<span class="tag p audit-tag stale" title="发出两天仍未通过审核，别人很可能看不到这条">未过审</span>';
+}
+function onAuditUpdate(d) {
+  const key = "id:" + d.id;
+  for (const col of [TL.all, TL.teacher]) {
+    const m = col.msgs.find(x => msgKey(x) === key);
+    if (m) m.audit_status = d.audit_status;
+  }
+  if (d.audit_status === 0) return;
+  document.querySelectorAll(`.msg[data-mid="${key}"] .audit-tag`).forEach(t => t.remove());
+}
 function renderMsg(m, frag, kw) {
   const isTeacher = m.user_type === 4;
   const div = document.createElement("div");
@@ -1019,7 +1039,7 @@ function renderMsg(m, frag, kw) {
   const tags = [];
   if (isTeacher) tags.push('<span class="tag t">老师</span>');
   if (isTeacher && m.to_user_id > 0) tags.push('<span class="tag r">回复</span>');
-  if (m.audit_status === 0) tags.push('<span class="tag p">审核中</span>');
+  if (m.audit_status === 0) tags.push(auditTag(m));
 
   const alias = nickCountCache[m.user_id] > 1 ? '<span class="alias-badge">曾</span>' : "";
   const quote = m.quote
@@ -2447,6 +2467,7 @@ function connectWS() {
     try { d = JSON.parse(ev.data); } catch (e) { return; }
     if (d.type === "message") { onRealtimeMessage(d.data); }
     else if (d.type === "status") { updateImStatus(d); }
+    else if (d.type === "audit") { onAuditUpdate(d); }
     else if (d.type === "synced") {
       if (d.error) console.warn("同步失败：" + d.error);
       else onSyncProgress({ running: false, done: true, added: d.added || 0,

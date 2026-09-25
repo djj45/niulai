@@ -619,7 +619,7 @@ def _msg_payload_from_dict(room_id: int, m: dict) -> dict:
         "teacher_id": int(m.get("teacher_id") or m.get("teacherId") or 0),
         "to_user_id": int(m.get("to_user_id") or m.get("toUserId") or 0),
         "vip_user": 1 if (m.get("vip_user") or m.get("vipUser")) else 0,
-        "audit_status": int(m.get("audit_status") or m.get("auditStatus") or 1),
+        "audit_status": 1,                 # 实时推送的审核字段是占位值；真实状态由 _audit_worker 复查
         "im_msg_seq": int(m.get("im_msg_seq") or m.get("imMsgSeq") or 0),
         "images": [],
         "quote": None,
@@ -1010,6 +1010,71 @@ def _sync_worker():
             print(f"[同步] 失败：{e}")
         finally:
             _sync_state["running"] = False
+
+# ===================== 自己消息的审核状态复查 =====================
+# 你发的消息刚发出时约牛标 auditStatus=0（未过审，别人暂时看不到），审核通过后变 1。
+# 但增量同步见到库里已有的 id 就停，不会回头刷新已存在的记录——标签会一直停在「审核中」。
+# 这里专门回头查：只查最近 AUDIT_WINDOW 内还是 0 的几条，每条一个小请求；没有待查就不发请求。
+AUDIT_WINDOW = 2 * 86400          # 超过两天还没过审就不再查（前端标「未过审」）
+AUDIT_IV_PENDING = 120            # 有待查消息时的间隔
+_audit_wake = threading.Event()   # 发消息后叫醒，尽快查一次
+
+
+def _audit_check_once() -> int:
+    c = cfg()
+    room_id = int(c.get("room_id") or 0)
+    if not room_id or not c.get("centraltoken"):
+        return 0
+    if _sync_state["auth_failed"] and time.time() < _sync_state["next_try"]:
+        return 0
+    with _db_lock:
+        pend = db.pending_audit(conn, room_id, int(time.time()) - AUDIT_WINDOW, limit=10)
+    if not pend:
+        return 0
+    client = _client()
+    changed = 0
+    for p in pend:
+        mid = int(p["id"])
+        try:
+            # 游标是「比它更早」的意思：从 id+1 往前取 3 条，第一条就是它本身
+            items = client.get_chat_records(room_id, cursor_id=mid + 1, direction=1, page_size=3)
+        except AuthExpired:
+            return changed
+        except Exception as e:                         # noqa: BLE001
+            print(f"[审核复查] {mid} 查询失败：{e}")
+            continue
+        hit = next((x for x in items if int(x.get("id") or 0) == mid), None)
+        if hit is not None and hit.get("auditStatus") is not None:
+            st = int(hit.get("auditStatus"))
+            if st != 0:
+                with _db_lock:
+                    n = db.set_audit(conn, room_id, mid, st)
+                    conn.commit()
+                if n:
+                    changed += 1
+                    print(f"[审核复查] {p['msg_date']} #{mid} 已过审", flush=True)
+                    broadcast({"type": "audit", "id": mid, "audit_status": st})
+        time.sleep(0.5)
+    return changed
+
+
+def _audit_worker():
+    time.sleep(20)                    # 让开机同步先跑
+    while True:
+        try:
+            _audit_check_once()
+        except Exception as e:                         # noqa: BLE001
+            print(f"[审核复查] 异常：{e}")
+        with _db_lock:
+            c = cfg()
+            has = bool(db.pending_audit(conn, int(c.get("room_id") or 0) or None,
+                                        int(time.time()) - AUDIT_WINDOW, limit=1))
+        # 有待查的每 2 分钟一轮；没有就只等「发了新消息」的信号（最多 30 分钟兜底一次）
+        _audit_wake.wait(AUDIT_IV_PENDING if has else 1800)
+        if _audit_wake.is_set():
+            _audit_wake.clear()
+            time.sleep(40)            # 刚发出去：等 IM/REST 把它落库再查
+
 
 # ===================== 页面 =====================
 @app.route("/")
@@ -1978,6 +2043,7 @@ async def api_send():
             if len(text) > 2000:
                 return jsonify({"error": "消息过长（上限 2000 字）"}), 400
             res = client.send_text(room_id, text)
+        _audit_wake.set()
         return jsonify({"status": "ok", "data": res})
     except AuthExpired:
         return jsonify({"error": "登录失效，请更新 centraltoken"}), 401
@@ -2123,6 +2189,7 @@ async def startup():
     threading.Thread(target=_prefetch_worker, daemon=True).start()
     threading.Thread(target=_im_supervisor, daemon=True).start()
     threading.Thread(target=_sync_worker, daemon=True).start()
+    threading.Thread(target=_audit_worker, daemon=True).start()
     _sync_wake.set()        # 启动立刻拉一轮最新消息（原「同步最新」按钮的活，现在自动做）
     if MEDIA_AUTOFETCH:
         threading.Thread(target=_media_autofetch, daemon=True).start()

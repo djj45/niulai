@@ -308,7 +308,22 @@ ON CONFLICT(user_id, avatar_url) DO UPDATE SET first_seen=user_avatars.first_see
 """
 
 
-def _msg_row(room_id: int, m: dict, pk: str, mid: int, seq: int) -> tuple:
+def _audit_of(m: dict, origin: str = "rest") -> int:
+    """审核状态：REST 记录里的 auditStatus 是权威值（0=未通过审核，1=已通过），原样保存；
+    IM 推送里的是审核前占位值（恒为 0），一律按 1 入库，等 REST 回填。
+    以前写成 int(x or 1)，REST 的真实 0 在首次入库时也被当成「没有值」改成了 1。"""
+    if origin == "im":
+        return 1
+    v = m.get("audit_status")
+    if v is None:
+        v = m.get("auditStatus")
+    try:
+        return int(v) if v is not None and v != "" else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def _msg_row(room_id: int, m: dict, pk: str, mid: int, seq: int, origin: str = "rest") -> tuple:
     quote = m.get("quoteContent") or m.get("quote")
     quote_json = m.get("quote_json")
     if not quote_json and quote:
@@ -334,7 +349,7 @@ def _msg_row(room_id: int, m: dict, pk: str, mid: int, seq: int) -> tuple:
             int(m.get("fee_status") or m.get("feeStatus") or 0),
             1 if (m.get("vip_user") or m.get("vipUser")) else 0,
             int(m.get("source_type") or m.get("sourceType") or 0),
-            int(m.get("audit_status") or m.get("auditStatus") or 1),
+            _audit_of(m, origin),
             m.get("im_group_id") or m.get("imGroupId") or "", seq, "",
             m.get("raw") if isinstance(m.get("raw"), str) else json.dumps(m, ensure_ascii=False),
             _now())
@@ -405,13 +420,12 @@ def upsert_messages(conn, room_id: int, msgs: list, origin: str = "rest") -> int
     upd_rows = [p for p in prepared if p[0] in existing]
     if new_rows:
         conn.executemany(_INSERT_MSG,
-                         [_msg_row(room_id, m, pk, mid, seq)
+                         [_msg_row(room_id, m, pk, mid, seq, origin)
                           for pk, mid, seq, m in new_rows])
     if upd_rows:
         conn.executemany(_UPDATE_MSG, [
             (m.get("msg_content") if m.get("msg_content") is not None else m.get("msgContent"),
-             int(m.get("audit_status") if m.get("audit_status") is not None
-                 else (m.get("auditStatus") if m.get("auditStatus") is not None else 1)),
+             _audit_of(m, origin),
              int(m.get("fee_status") or m.get("feeStatus") or 0),
              seq,
              m.get("avatar_url") or m.get("avatarUrl") or "",
@@ -769,6 +783,22 @@ def timeline(conn, room_id: int | None = None, only_teacher: bool = False,
         rows.reverse()
         res.update(messages=rows, has_older=len(rows) >= size, has_newer=False)
     return res
+
+
+def pending_audit(conn, room_id: int | None = None, since_ts: int = 0, limit: int = 20) -> list:
+    """还没过审（audit_status=0）的消息，最新的在前。实际只会是自己发的——
+    别人的消息约牛只在审核通过后才返回。"""
+    sql, params = "SELECT id, ts, msg_date FROM messages WHERE audit_status=0 AND id>0 AND ts>=?", [since_ts]
+    if room_id:
+        sql += " AND room_id=?"
+        params.append(room_id)
+    return [dict(r) for r in conn.execute(sql + " ORDER BY ts DESC LIMIT ?", params + [limit])]
+
+
+def set_audit(conn, room_id: int, msg_id: int, status: int) -> int:
+    cur = conn.execute("UPDATE messages SET audit_status=? WHERE room_id=? AND id=? AND audit_status!=?",
+                       (int(status), room_id, msg_id, int(status)))
+    return cur.rowcount
 
 
 def locate_message(conn, msg_id: int, room_id: int | None = None) -> dict | None:
