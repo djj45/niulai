@@ -1282,7 +1282,8 @@ async function doSearch() {
   if (d.error) { alert(d.error); return; }
   enterSearch();
   searchKeyword = kw;
-  renderMessages(d.messages || [], document.getElementById("allList"), kw);
+  // 结果按时间正序排，最新的在最下面：贴底，一眼先看到最近的命中
+  renderMessages(d.messages || [], document.getElementById("allList"), kw, true);
   document.getElementById("allCount").textContent =
     `命中 ${d.total || 0} 条` + (d.truncated ? `（显示最新 ${(d.messages || []).length}）` : "");
   document.getElementById("allCount").title = d.truncated ? "结果被截断，可加日期范围缩小" : "";
