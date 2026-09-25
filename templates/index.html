@@ -1310,7 +1310,7 @@ async function jumpToMessage(mid, qdate) {
   if (!ts || !isFinite(ts)) { toast("找不到原消息"); return; }
   if (searchMode) leaveSearch();
   _linkMuteUntil = Date.now() + 1200;
-  await Promise.all([tlJump(TL.all, ts, "first"), tlJump(TL.teacher, ts, "last")]);
+  await Promise.all([tlJump(TL.all, ts, "first"), teacherJob(() => tlJump(TL.teacher, ts, "last"))]);
   const el = mid && findMsgEl(mid);
   if (el) scrollToEl(document.getElementById("allList"), el, { center: true, highlight: true });
   else toast(exact ? "已跳到原消息附近" : "原消息还没同步到本地，已跳到它发出的时间");
@@ -1639,7 +1639,9 @@ function scrollToEl(list, el, opt) {
 }
 
 // ---------- 对外的定位动作 ----------
-let _linkMuteUntil = 0;          // 显式定位后的短时间内，老师栏不走「联动」，按定位规则摆
+let _linkMuteUntil = 0;
+/** 联动关着时，右栏的任何定位都不碰老师栏（老师栏是一条独立的时间线） */
+function teacherJob(fn) { return _linkOn ? fn() : Promise.resolve(); }          // 显式定位后的短时间内，老师栏不走「联动」，按定位规则摆
 function dayTs(day, hhmm) { return Math.floor(new Date(day + "T" + hhmm + ":00").getTime() / 1000); }
 function latestDay() { return DAYS.length ? DAYS[DAYS.length - 1].date : (TL.all.lastDay || todayStr()); }
 
@@ -1649,7 +1651,7 @@ async function jumpToTs(ts, opt) {
   _linkMuteUntil = Date.now() + 1200;
   await Promise.all([
     tlJump(TL.all, ts, "first", opt),
-    tlJump(TL.teacher, ts, "first", opt),
+    teacherJob(() => tlJump(TL.teacher, ts, "first", opt)),
   ]);
   afterAllMoved();
 }
@@ -1670,7 +1672,7 @@ async function jumpToDayEnd() {
   _linkMuteUntil = Date.now() + 1200;
   await Promise.all([
     tlJump(TL.all, ts, "last", { bottom: true }),
-    tlJump(TL.teacher, ts, "last", { bottom: true }),
+    teacherJob(() => tlJump(TL.teacher, ts, "last", { bottom: true })),
   ]);
   afterAllMoved();
 }
@@ -1689,11 +1691,13 @@ async function scrollToBottom() {
   const jobs = [];
   if (TL.all.hasNewer) jobs.push(tlLatest(TL.all));
   else pinToBottom(al);
-  if (TL.teacher.hasNewer) jobs.push(tlLatest(TL.teacher));
-  else pinToBottom(tl);
+  if (_linkOn) {
+    if (TL.teacher.hasNewer) jobs.push(tlLatest(TL.teacher));
+    else pinToBottom(tl);
+  }
   await Promise.all(jobs);
   _follow.allList = true;
-  _follow.teacherList = true;
+  if (_linkOn) _follow.teacherList = true;
   pendingNew = 0;
   stickToBottom = true;
   document.getElementById("newMsgHint").style.display = "none";
@@ -2240,7 +2244,7 @@ function gotoContext(ts) {
   _linkMuteUntil = Date.now() + 1200;
   Promise.all([
     tlJump(TL.all, ts, "first", { highlight: true, center: true }),
-    tlJump(TL.teacher, ts, "last"),
+    teacherJob(() => tlJump(TL.teacher, ts, "last")),
   ]).then(afterAllMoved);
 }
 function applySearchPreset(v) {
