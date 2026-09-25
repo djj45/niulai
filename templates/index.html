@@ -996,15 +996,17 @@ function renderContent(m, kw) {
   return esc(text);
 }
 
-/** 你发的消息还没过审（约牛标 auditStatus=0，别人暂时看不到）。
+/** 你发的消息还没过审（约牛标 auditStatus=0）。
+ *  注意：实时推送不经审核，发出当时在线的人已经看到了；审核影响的是历史记录——
+ *  库里所有 0 都只出现在自己发的消息上，别人翻历史时大概率看不到未过审的这条。
  *  两天内：「审核中」，后台每 2 分钟复查，过审后标签自动消失；
  *  超过两天仍是 0：「未过审」，基本就是没通过。 */
 const AUDIT_STALE_SEC = 2 * 86400;
 function auditTag(m) {
   const age = Date.now() / 1000 - (m.ts || 0);
   return age < AUDIT_STALE_SEC
-    ? '<span class="tag p audit-tag" title="约牛还没审核通过，别人暂时看不到；后台会定期复查，通过后标签自动消失">审核中</span>'
-    : '<span class="tag p audit-tag stale" title="发出两天仍未通过审核，别人很可能看不到这条">未过审</span>';
+    ? '<span class="tag p audit-tag" title="约牛还没审核通过这条。发出时在线的人已通过实时推送看到了，但别人之后翻历史记录可能看不到它。后台每 2 分钟复查，通过后标签自动消失">审核中</span>'
+    : '<span class="tag p audit-tag stale" title="发出两天仍未通过审核。发出当时在线的人看到过，但别人翻历史记录大概率看不到这条">未过审</span>';
 }
 function onAuditUpdate(d) {
   const key = "id:" + d.id;
