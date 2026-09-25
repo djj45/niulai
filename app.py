@@ -1490,6 +1490,57 @@ async def api_messages():
     return jsonify(out)
 
 
+@app.route("/api/timeline")
+async def api_timeline():
+    """连续时间线：按时间点/游标双向取消息（见 db.timeline）。"""
+    c = cfg()
+    room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
+    only_teacher = request.args.get("type", "all") == "teacher"
+    try:
+        with _db_lock:
+            out = db.timeline(conn, room_id or None, only_teacher=only_teacher,
+                              at_ts=int(request.args.get("at") or 0),
+                              older=request.args.get("older", ""),
+                              newer=request.args.get("newer", ""),
+                              size=max(1, min(int(request.args.get("size") or 500), 3000)),
+                              before=max(0, min(int(request.args.get("before") or 300), 3000)),
+                              after=max(1, min(int(request.args.get("after") or 300), 3000)))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(out)
+
+
+@app.route("/api/messages/locate")
+async def api_locate():
+    """按消息 id 查时间：{found, ts, msg_date}。库里没有就 found=false，前端用引用里的时间兜底。"""
+    c = cfg()
+    room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
+    try:
+        mid = int(request.args.get("id") or 0)
+    except ValueError:
+        mid = 0
+    if not mid:
+        return jsonify({"found": False})
+    with _db_lock:
+        r = db.locate_message(conn, mid, room_id or None)
+    return jsonify({"found": bool(r), **(r or {})})
+
+
+_days_cache = {"key": None, "at": 0.0, "data": []}
+
+
+@app.route("/api/days")
+async def api_days():
+    """每天的消息数/老师消息数/首末时间，给滑轨和热力日历用。20 秒内复用。"""
+    c = cfg()
+    room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
+    now = time.time()
+    if _days_cache["key"] != room_id or now - _days_cache["at"] > 20:
+        with _db_lock:
+            _days_cache.update(key=room_id, at=now, data=db.days_summary(conn, room_id or None))
+    return jsonify({"days": _days_cache["data"]})
+
+
 @app.route("/api/messages/search")
 async def api_search():
     c = cfg()

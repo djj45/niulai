@@ -706,6 +706,96 @@ def article_image_urls(conn) -> list:
     return out
 
 
+# ===================== 连续时间线（按时间点双向加载） =====================
+# 排序键 (ts, im_msg_seq, pk)：pk 唯一，保证翻页游标不重不漏。
+# 游标格式 "ts|seq|pk"，每条消息都带自己的游标 _cur，前端裁剪窗口后也能续上。
+_TL_ORDER_ASC = " ORDER BY ts ASC, im_msg_seq ASC, pk ASC"
+_TL_ORDER_DESC = " ORDER BY ts DESC, im_msg_seq DESC, pk DESC"
+
+
+def _parse_cursor(cur: str):
+    parts = (cur or "").split("|", 2)
+    if len(parts) != 3:
+        raise ValueError(f"bad cursor: {cur!r}")
+    return int(parts[0]), int(parts[1]), parts[2]
+
+
+def _tl_rows(conn, where: str, params: list, order: str, limit: int) -> list:
+    sql = f"SELECT * FROM messages WHERE 1=1{where}{order} LIMIT ?"
+    out = []
+    for r in conn.execute(sql, params + [limit]).fetchall():
+        d = _msg_to_dict(r)
+        d["_cur"] = f"{r['ts'] or 0}|{r['im_msg_seq'] or 0}|{r['pk']}"
+        d.pop("raw", None)            # 前端用不到原始 JSON，省一半流量
+        out.append(d)
+    return out
+
+
+def timeline(conn, room_id: int | None = None, only_teacher: bool = False,
+             at_ts: int = 0, older: str = "", newer: str = "",
+             size: int = 500, before: int = 300, after: int = 300) -> dict:
+    """连续时间线取数。四种读法（结果一律时间正序）：
+      * older=<cur>：取游标之前（更早）的 size 条
+      * newer=<cur>：取游标之后（更新）的 size 条
+      * at_ts=<ts>：取 ts 之前 before 条 + ts 之后（含）after 条
+      * 都不给：取最新的 size 条
+    has_older / has_newer 按「是否取满」判断，边界上可能多判一次 True，下次取空就会变 False。
+    """
+    base, bp = "", []
+    if room_id:
+        base += " AND room_id=?"
+        bp.append(room_id)
+    if only_teacher:
+        base += " AND user_type IN (3,4)"
+    res = {"messages": [], "has_older": False, "has_newer": False}
+    if older:
+        t, q, k = _parse_cursor(older)
+        rows = _tl_rows(conn, base + " AND ts<=? AND (ts, im_msg_seq, pk) < (?, ?, ?)",
+                        bp + [t, t, q, k], _TL_ORDER_DESC, size)
+        rows.reverse()
+        res.update(messages=rows, has_older=len(rows) >= size, has_newer=True)
+    elif newer:
+        t, q, k = _parse_cursor(newer)
+        rows = _tl_rows(conn, base + " AND ts>=? AND (ts, im_msg_seq, pk) > (?, ?, ?)",
+                        bp + [t, t, q, k], _TL_ORDER_ASC, size)
+        res.update(messages=rows, has_older=True, has_newer=len(rows) >= size)
+    elif at_ts:
+        a = _tl_rows(conn, base + " AND ts<?", bp + [at_ts], _TL_ORDER_DESC, before)
+        a.reverse()
+        b = _tl_rows(conn, base + " AND ts>=?", bp + [at_ts], _TL_ORDER_ASC, after)
+        res.update(messages=a + b, has_older=len(a) >= before, has_newer=len(b) >= after)
+    else:
+        rows = _tl_rows(conn, base, bp, _TL_ORDER_DESC, size)
+        rows.reverse()
+        res.update(messages=rows, has_older=len(rows) >= size, has_newer=False)
+    return res
+
+
+def locate_message(conn, msg_id: int, room_id: int | None = None) -> dict | None:
+    """按消息 id 查它的时间（点引用跳原消息用）。"""
+    sql, params = "SELECT ts, msg_date FROM messages WHERE id=?", [msg_id]
+    if room_id:
+        sql += " AND room_id=?"
+        params.append(room_id)
+    r = conn.execute(sql + " LIMIT 1", params).fetchone()
+    return {"ts": r["ts"] or 0, "msg_date": r["msg_date"] or ""} if r else None
+
+
+def days_summary(conn, room_id: int | None = None) -> list:
+    """每天一行：日期、消息数、老师消息数、当天首末条的 ts（滑轨/热力日历用）。"""
+    where, params = "", []
+    if room_id:
+        where, params = " WHERE room_id=?", [room_id]
+    rows = conn.execute(
+        "SELECT substr(msg_date,1,10) AS day, COUNT(*) AS cnt, "
+        "SUM(CASE WHEN user_type IN (3,4) THEN 1 ELSE 0 END) AS tcnt, "
+        f"MIN(ts) AS t0, MAX(ts) AS t1 FROM messages{where} "
+        "GROUP BY day ORDER BY day", params).fetchall()
+    return [{"date": r["day"], "count": r["cnt"], "teacher": r["tcnt"] or 0,
+             "first_ts": r["t0"] or 0, "last_ts": r["t1"] or 0}
+            for r in rows if r["day"]]
+
+
 def stats(conn, room_id: int | None = None) -> dict:
     where, params = "", []
     if room_id:

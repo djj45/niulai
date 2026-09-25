@@ -142,7 +142,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .pin-curr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: pointer; color: var(--muted); }
 .pin-arrow { flex: none; cursor: pointer; color: var(--muted); }
-.pin-panel { display: none; position: absolute; top: 100%; left: 0; right: 0; z-index: 60;
+.pin-panel { display: none; position: absolute; top: 0; left: 0; right: 0; z-index: 60;
   background: var(--card); border: 1px solid var(--border); border-top: 0;
   border-radius: 0 0 8px 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25);
   max-height: 40vh; overflow-y: auto; }
@@ -191,8 +191,102 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .search-box button { padding: 3px 12px; border: 1px solid var(--border); border-radius: 4px;
   background: var(--card); cursor: pointer; font-size: 13px; }
 .search-box button:hover { background: var(--hover); border-color: var(--accent); }
+.search-box .row.quick-times { margin-bottom: 0; }
 .quick-times { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 .quick-times button { padding: 2px 8px; font-size: 12px; }
+.quick-times .pin-btn { background: rgba(232,122,50,.10); border-color: rgba(232,122,50,.45); }
+.quick-times .pin-btn.open { border-color: var(--accent); }
+.quick-times .qt-info { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.quick-times .clear-btn { border-color: var(--accent); color: var(--accent); display: none; }
+.quick-times .clear-btn.show { display: inline-block; }
+
+/* 快捷定位行：‹ 日期 › */
+.day-nav { display: inline-flex; align-items: center; gap: 0; margin-right: 4px; }
+.search-box .day-nav button { padding: 2px 6px; }
+.search-box .day-nav button:disabled { color: #ccc; background: #fafafa; cursor: default; }
+.search-box .day-nav .day-btn { font-weight: 600; min-width: 76px; margin: 0 2px; }
+.search-box .day-nav .day-btn.open { border-color: var(--accent); color: var(--accent); }
+.search-box select { padding: 2px 4px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 12px; background: var(--card); }
+.msg .time.ctx { cursor: pointer; color: #1d39c4; }
+.msg .time.ctx:hover { text-decoration: underline; }
+.col-header .link-btn { margin-left: auto; padding: 1px 8px; font-size: 12px; font-weight: 400;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--muted); cursor: pointer; }
+.col-header .link-btn.on { border-color: var(--accent); color: var(--accent); background: #fff7f2; }
+
+.teacher-empty { display: none; position: absolute; inset: 0; z-index: 4; background: var(--card);
+  text-align: center; padding-top: 56px; color: var(--muted); font-size: 13px; line-height: 2; }
+.teacher-empty b { display: block; font-size: 15px; color: var(--text); font-weight: 500; }
+.teacher-empty button { margin-top: 10px; padding: 3px 14px; border: 1px solid var(--border); border-radius: 12px;
+  background: var(--card); cursor: pointer; font-size: 12px; color: var(--text); }
+.teacher-empty button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* 右栏列表 + 时间滑轨 */
+.list-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
+.list-wrap .msg-list { flex: 1; min-width: 0; }
+#allList { scrollbar-width: none; padding-right: 24px; }   /* 滑轨就是它的滚动条 */
+#allList::-webkit-scrollbar { display: none; }
+.scrub { position: absolute; top: 0; bottom: 0; right: 0; width: 24px; z-index: 6;
+  cursor: pointer; user-select: none; touch-action: none; transition: width .12s; }
+.scrub:hover, .scrub.drag { width: 78px; background: linear-gradient(to left, rgba(255,255,255,.97) 75%, rgba(255,255,255,0)); }
+.scrub-mon { position: absolute; top: 3px; right: 0; width: 24px; text-align: center; font-size: 10px;
+  line-height: 14px; color: var(--muted); cursor: default; white-space: nowrap; }
+.scrub-arrow { position: absolute; right: 2px; width: 20px; height: 16px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: #999; font-size: 9px; line-height: 16px; cursor: pointer; }
+.scrub-arrow:hover:not(:disabled) { background: #f0f0f0; color: var(--accent); }
+.scrub-arrow:disabled { color: #ddd; cursor: default; }
+.scrub-arrow.up { top: 18px; }
+.scrub-arrow.down { bottom: 3px; }
+.scrub-track { position: absolute; top: 36px; bottom: 22px; right: 7px; width: 10px; border-radius: 4px;
+  background: #f0f0f0; overflow: hidden; }
+.scrub-track canvas { width: 100%; height: 100%; display: block; }
+.scrub-labels { position: absolute; top: 36px; bottom: 22px; right: 22px; width: 54px; display: none;
+  pointer-events: none; }
+.scrub:hover .scrub-labels, .scrub.drag .scrub-labels { display: block; }
+.scrub-labels span { position: absolute; right: 0; transform: translateY(1px); font-size: 10px;
+  color: var(--muted); white-space: nowrap; line-height: 1; }
+.scrub-labels span.cur { color: #1d39c4; font-weight: 600; }
+.scrub-thumb { position: absolute; right: 4px; width: 16px; height: 3px;
+  background: #1d39c4; border-radius: 2px; pointer-events: none; }
+.scrub-bubble { display: none; position: absolute; right: 82px; padding: 3px 8px;
+  background: rgba(0,0,0,.78); color: #fff; font-size: 12px; border-radius: 4px; white-space: nowrap;
+  pointer-events: none; transform: translateY(-50%); }
+
+/* 热力日历 */
+.cal-pop { display: none; position: absolute; left: 0; right: 0; z-index: 61; background: var(--card);
+  border-bottom: 1px solid var(--border); box-shadow: 0 8px 24px rgba(0,0,0,.18); padding: 8px 12px 10px; }
+.cal-head { display: flex; align-items: center; gap: 10px; font-size: 13px; margin-bottom: 6px; }
+.cal-metric button { padding: 1px 8px; font-size: 12px; border: 1px solid var(--border); background: var(--card);
+  cursor: pointer; color: var(--muted); }
+.cal-metric button:first-child { border-radius: 4px 0 0 4px; }
+.cal-metric button:last-child { border-radius: 0 4px 4px 0; border-left: 0; }
+.cal-metric button.on { color: var(--accent); border-color: var(--accent); }
+.cal-x { margin-left: auto; cursor: pointer; color: var(--muted); padding: 0 4px; }
+.cal-scroll { overflow-x: auto; padding-bottom: 4px; }
+.cal-months { position: relative; height: 14px; margin-left: 22px; font-size: 10px; color: var(--muted); }
+.cal-months span { position: absolute; top: 0; white-space: nowrap; }
+.cal-grid-wrap { display: flex; gap: 4px; }
+.cal-week { display: grid; grid-template-rows: repeat(7, 12px); gap: 3px; font-size: 9px; color: var(--muted);
+  width: 18px; line-height: 12px; position: sticky; left: 0; background: var(--card); z-index: 1; }
+.cal-grid { display: grid; grid-template-rows: repeat(7, 12px); grid-auto-columns: 12px; gap: 3px; }
+.cal-cell { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.cal-cell.out { background: transparent; }
+.cal-cell.l0 { background: #ebedf0; }
+.cal-cell.l1 { background: #ffe7d9; } .cal-cell.l2 { background: #ffbb96; }
+.cal-cell.l3 { background: #ff7a45; } .cal-cell.l4 { background: #d4380d; }
+.cal-cell.has { cursor: pointer; }
+.cal-cell.has:hover { outline: 1px solid #333; }
+.cal-cell.cur { outline: 2px solid #1d39c4; outline-offset: 0; }
+.cal-foot { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.cal-legend { display: inline-flex; align-items: center; gap: 3px; }
+.cal-legend .cal-cell { width: 10px; height: 10px; }
+
+/* 轻提示 */
+.toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 10000;
+  background: rgba(0,0,0,.78); color: #fff; font-size: 13px; padding: 7px 16px; border-radius: 16px;
+  opacity: 0; pointer-events: none; transition: opacity .2s; }
+.toast.show { opacity: 1; }
 
 /* 图片放大 */
 .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9);
@@ -232,7 +326,7 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .modal .kv b { color: var(--muted); font-weight: 400; display: inline-block; min-width: 84px; }
 
 /* 新消息提示 */
-.new-msg-hint { position: absolute; bottom: 96px; right: 14px; background: var(--accent);
+.new-msg-hint { position: absolute; bottom: 96px; right: 34px; background: var(--accent);
   color: #fff; padding: 6px 14px; border-radius: 16px; cursor: pointer; font-size: 13px;
   box-shadow: 0 2px 8px rgba(0,0,0,.2); display: none; z-index: 10; }
 
@@ -267,16 +361,6 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 <div class="topbar">
   <span class="title" title="约牛聊天室">📌 约牛</span>
   <span class="room-name" id="roomName">{{ room_id and ('#' + room_id|string) or '' }}</span>
-  <span class="cal-group">
-    <input type="date" id="datePicker" onchange="onDatePick()">
-    <button onclick="shiftDay(-1)" title="前一天">◀</button>
-    <button onclick="loadToday()" id="todayBtn">今天</button>
-    <button onclick="shiftDay(1)" title="后一天">▶</button>
-  </span>
-  <span class="sep"></span>
-  <button onclick="setRange(3)" data-range="3">近3天</button>
-  <button onclick="setRange(7)" data-range="7">近7天</button>
-  <button onclick="setRange(0)" data-range="0">全部</button>
   <span class="spacer"></span>
   <span class="status"><span class="dot" id="imDot"></span><span id="imText">初始化…</span></span>
   <button onclick="syncFull()" id="fullSyncBtn" title="全量同步：翻到最早">⏬ 全量</button>
@@ -300,10 +384,16 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <div class="col col-left">
     <div class="col-header">
       <span>🎓 老师观点</span>
-      <span class="count" id="teacherCount">0 条</span>
+      <span class="count" id="teacherCount"></span>
+      <button class="link-btn" id="linkBtn" onclick="toggleLink()"
+              title="联动：右栏滚到哪个时刻，老师栏就停在那一刻前后的老师发言">🔗 联动</button>
     </div>
-    <div class="msg-list" id="teacherList">
-      <div class="loading">加载中…</div>
+    <div class="list-wrap">
+      <div class="msg-list" id="teacherList">
+        <div class="loading">加载中…</div>
+      </div>
+      <!-- 右栏那天老师没发言：明确说没有，而不是拿前一天的发言顶上 -->
+      <div class="teacher-empty" id="teacherEmpty"></div>
     </div>
   </div>
 
@@ -316,36 +406,61 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
         <input type="text" id="userIdInput" placeholder="用户ID" style="width:88px">
         <button onclick="doSearch()">搜索</button>
         <button onclick="clearSearch()">清除</button>
-        <span style="color:var(--muted);font-size:12px">日期</span>
+        <select id="searchPreset" onchange="applySearchPreset(this.value)" title="搜索范围">
+          <option value="">全部</option><option value="3">近3天</option>
+          <option value="7">近7天</option><option value="30">近30天</option>
+        </select>
         <input type="date" id="searchStart" style="width:130px" onchange="onSearchDateChange()" title="不选 = 最早">
         <span>~</span>
         <input type="date" id="searchEnd" style="width:130px" onchange="onSearchDateChange()" title="不选 = 今天">
       </div>
       <div class="row quick-times">
-        <span style="color:var(--muted);font-size:12px">快捷定位</span>
-        <button onclick="jumpTo('09:15')">9:15 集合竞价</button>
-        <button onclick="jumpTo('09:30')">9:30 早盘</button>
-        <button onclick="jumpTo('11:30')">11:30 午间</button>
-        <button onclick="jumpTo('13:00')">13:00 午后</button>
-        <button onclick="jumpTo('14:30')">14:30 尾盘</button>
-        <button onclick="jumpTo('00:00')">回到顶部</button>
-        <button onclick="scrollToBottom()">回到底部</button>
+        <span class="day-nav">
+          <button id="dayPrev" onclick="dayStep(-1)" title="前一天">‹</button>
+          <button id="dayBtn" class="day-btn" onclick="toggleCal()" title="点开日历">—</button>
+          <button id="dayNext" onclick="dayStep(1)" title="后一天">›</button>
+        </span>
+        <button onclick="jumpTo('09:15')" title="9:15 集合竞价">9:15</button>
+        <button onclick="jumpTo('09:30')" title="9:30 早盘">9:30</button>
+        <button onclick="jumpTo('11:30')" title="11:30 午间">11:30</button>
+        <button onclick="jumpTo('13:00')" title="13:00 午后">13:00</button>
+        <button onclick="jumpTo('14:30')" title="14:30 尾盘">14:30</button>
+        <button onclick="jumpTo('00:00')" title="回到这一天的开头">顶部</button>
+        <button onclick="jumpToDayEnd()" title="跳到这一天的最后一条">底部</button>
+        <button onclick="scrollToBottom()" title="回到最新消息">最新</button>
+        <!-- 置顶消息（房间级，pinnedListById）：只留一个按钮，点开从下面展开面板 -->
+        <button class="pin-btn" id="pinBar" style="display:none" onclick="togglePinPanel()"
+                title="置顶消息">📌 <b id="pinCount">0</b> ▾</button>
+        <span class="qt-info" id="allCount">全部 0 条</span>
+        <button class="clear-btn" id="clearBtn" onclick="clearSearch()">✕ 返回全部</button>
       </div>
     </div>
-    <div class="col-header">
-      <span id="allCount">全部 0 条</span>
-      <span class="count" id="rangeHint"></span>
-      <button class="clear-btn" id="clearBtn" onclick="clearSearch()">✕ 返回全部</button>
+    <div class="pin-panel" id="pinPanel"></div>
+    <div class="cal-pop" id="calPop">
+      <div class="cal-head">
+        <b>日历</b>
+        <span class="cal-metric">
+          <button data-metric="count" onclick="setCalMetric('count')">全部消息</button>
+          <button data-metric="teacher" onclick="setCalMetric('teacher')">老师发言</button>
+        </span>
+        <span class="cal-x" onclick="toggleCal(false)">✕</span>
+      </div>
+      <div id="calBody"></div>
     </div>
-    <!-- 置顶消息（房间级，pinnedListById）：首条摘要 + 展开面板 -->
-    <div class="pin-bar" id="pinBar" style="display:none">
-      <span class="pin-badge" onclick="togglePinPanel()">📌 <b id="pinCount">0</b></span>
-      <div class="pin-curr" id="pinCurr" onclick="togglePinPanel()"></div>
-      <span class="pin-arrow" onclick="togglePinPanel()">▾</span>
-      <div class="pin-panel" id="pinPanel"></div>
-    </div>
-    <div class="msg-list" id="allList">
-      <div class="loading">加载中…</div>
+    <div class="list-wrap">
+      <div class="msg-list" id="allList">
+        <div class="loading">加载中…</div>
+      </div>
+      <!-- 右侧时间滑轨：整段历史按消息量铺满，拖动/点击跳到对应时刻 -->
+      <div class="scrub" id="scrub" style="display:none" title="">
+        <div class="scrub-mon" id="scrubMon"></div>
+        <button class="scrub-arrow up" id="scrubUp" onclick="scrubMonthStep(-1)">▲</button>
+        <div class="scrub-track" id="scrubTrack"><canvas id="scrubCanvas"></canvas></div>
+        <button class="scrub-arrow down" id="scrubDown" onclick="scrubMonthStep(1)">▼</button>
+        <div class="scrub-labels" id="scrubLabels"></div>
+        <div class="scrub-thumb" id="scrubThumb"></div>
+        <div class="scrub-bubble" id="scrubBubble"></div>
+      </div>
     </div>
     <div class="new-msg-hint" id="newMsgHint" onclick="scrollToBottom()">
       ↓ <span id="newMsgCount">0</span> 条新消息
@@ -461,18 +576,12 @@ let ws = null;
 let wsRetry = 0;
 let pendingNew = 0;
 let stickToBottom = true;
-let currentRangeDays = 0;         // 0 = 全部
-let currentDay = "";              // 非空 = 正在通读某一天
-let hasMoreHistory = false;       // 上面还有更早的消息
-let oldestLoadedId = 0;           // 当前已加载的最旧消息 id（向历史翻页的游标）
-let loadingOlder = false;
 const seenKeys = new Set();
 const avatarCache = {};
 const nickCountCache = {};
 const MSG_BATCH = 200;
 const RENDER_ALL_MAX = 4000;       // 一次性能直接渲染的上限（一天 3136 条 → 一次渲染完，不再分批贴底）
-const PAGE_LOAD = 1200;           // 范围模式首屏条数（最新优先）
-const PAGE_OLDER = 1000;          // 每次向内加载更早的条数
+let _hasToken = null;               // /api/status 拿到后才知道；未知时不显示登录提示
 const _renderStates = new Map();   // listId -> { msgs, list, index, observer, kw }
 
 // ===================== 工具 =====================
@@ -819,9 +928,9 @@ function pinSummary(p) {
 function renderPins() {
   const bar = document.getElementById("pinBar");
   if (!_pins.length) { bar.style.display = "none"; return; }
-  bar.style.display = "flex";
+  bar.style.display = "";
   document.getElementById("pinCount").textContent = _pins.length;
-  document.getElementById("pinCurr").textContent = pinSummary(_pins[0]);
+  bar.title = "置顶：" + pinSummary(_pins[0]);
   document.getElementById("pinPanel").innerHTML = _pins.map((p, i) => `
     <div class="pin-item" onclick="openPin(${i})">
       <div>${esc(pinSummary(p))}</div>
@@ -831,7 +940,13 @@ function renderPins() {
 function togglePinPanel(force) {
   const panel = document.getElementById("pinPanel");
   const show = force != null ? force : panel.style.display !== "block";
+  if (show) {
+    panel.style.top = document.querySelector(".col-right .search-box").offsetHeight + "px";
+    const cal = document.getElementById("calPop");
+    if (cal && cal.style.display === "block") toggleCal(false);
+  }
   panel.style.display = show ? "block" : "none";
+  document.getElementById("pinBar").classList.toggle("open", show);
 }
 function openPin(i) {
   const p = _pins[i];
@@ -843,6 +958,13 @@ function openPin(i) {
   document.getElementById("pinTextBody").textContent = p.msgContent || "";
   document.getElementById("pinTextModal").style.display = "flex";
 }
+// 点面板和📌按钮以外的地方就收起置顶面板
+document.addEventListener("click", e => {
+  const panel = document.getElementById("pinPanel");
+  if (panel.style.display === "block" && !e.target.closest("#pinPanel, #pinBar")) togglePinPanel(false);
+  const cal = document.getElementById("calPop");
+  if (cal.style.display === "block" && !e.target.closest("#calPop, #dayBtn")) toggleCal(false);
+});
 function closePinText() { document.getElementById("pinTextModal").style.display = "none"; }
 
 function renderContent(m, kw) {
@@ -880,6 +1002,7 @@ function renderMsg(m, frag, kw) {
   div.dataset.mid = msgKey(m);
   div.dataset.uid = m.user_id || "";
   div.dataset.ts = m.ts || 0;
+  div.dataset.day = (m.msg_date || "").slice(0, 10);
 
   const av = avatarUrl(m);
   const avatarHtml = av
@@ -900,7 +1023,7 @@ function renderMsg(m, frag, kw) {
 
   const alias = nickCountCache[m.user_id] > 1 ? '<span class="alias-badge">曾</span>' : "";
   const quote = m.quote
-    ? `<div class="quote" onclick="jumpToMessage('${esc(String(m.quote.id || ""))}')">
+    ? `<div class="quote" title="跳到原消息" onclick="jumpToMessage('${esc(String(m.quote.id || ""))}', '${esc(m.quote.msgDate || m.quote.createTime || "")}')">
          <span class="q-nick">${esc(m.quote.nickName || "")}</span>：
          ${esc(m.quote.msgType === 1 ? "[图片]" : (m.quote.msgContent || "").slice(0, 60))}</div>`
     : "";
@@ -916,7 +1039,9 @@ function renderMsg(m, frag, kw) {
               title="点击只看 TA 的发言">${esc(m.nick_name || "匿名")}${alias}</span>
         ${m.yn_no ? `<span class="yn">${esc(m.yn_no)}</span>` : ""}
         ${tags.join("")}
-        <span class="time">${searchMode ? fmtDateTime(m.msg_date) : fmtTime(m.msg_date)}</span>
+        ${searchMode
+          ? `<span class="time ctx" title="回到时间线，看这条消息的上下文" onclick="gotoContext(${Number(m.ts) || 0})">${fmtDateTime(m.msg_date)} ↗</span>`
+          : `<span class="time">${fmtTime(m.msg_date)}</span>`}
       </div>
       ${quote}
       <div class="content">${renderContent(m, kw)}</div>
@@ -933,8 +1058,11 @@ function renderMessages(msgs, list, kw, followBottom) {
   if (old && old.observer) { old.observer.disconnect(); _renderStates.delete(key); }
   list.innerHTML = "";
   if (!msgs.length) {
-    list.innerHTML = `<div class="empty">暂无消息<br>
-      <span style="font-size:12px">未登录——去 <a href="/login" target="_blank">登录页</a>（扫码 / 账密）后再拉线上消息</span></div>`;
+    const isTeacher = key === "teacherList";
+    const title = isTeacher ? "暂无老师消息" : "暂无消息";
+    const loginHint = (!isTeacher && _hasToken === false)
+      ? `<br><span style="font-size:12px">未登录——去 <a href="/login" target="_blank">登录页</a>（扫码 / 账密）后再拉线上消息</span>` : "";
+    list.innerHTML = `<div class="empty">${title}${loginHint}</div>`;
     return;
   }
   // 条数不多就一次性渲染完，然后直接贴底。
@@ -977,6 +1105,7 @@ function pinToBottom(list) {
     jump();
     _follow[id] = true;
     _pinning[id] = false;
+    if (id === "teacherList") updateTeacherHeader();
     if (id === "allList") {
       stickToBottom = true;
       pendingNew = 0;
@@ -1103,171 +1232,16 @@ function fmtDayInput(d) {
 }
 function todayStr() { return fmtDayInput(new Date()); }
 
-/** 「重新加载当前视图」：日历选的那天 / 范围（近N天或全部） */
-async function loadMessages() {
-  if (currentDay) return loadDay(currentDay);
-  return loadRange();
-}
 
-/** 范围模式：取最新的 PAGE_LOAD 条，落在底部（最新），滚到顶再补更早的 */
-async function loadRange() {
-  searchMode = false;
-  currentDay = "";
-  document.getElementById("clearBtn").classList.remove("show");
-  const extra = { size: PAGE_LOAD, order: "desc" };
-  if (currentRangeDays) extra.days = currentRangeDays;
-  const d = await (await fetch(buildQuery(extra))).json();
-  allMessages = d.messages || [];
-  hasMoreHistory = !!d.has_more;
-  oldestLoadedId = oldestIdOf(allMessages);
-  seenKeys.clear();
-  allMessages.forEach(m => seenKeys.add(msgKey(m)));
-  stickToBottom = true;
-  renderMessages(allMessages, document.getElementById("allList"), "", true);
-  renderTopHint();
-  updateCounts(d.total);
-  loadTeacherColumn();
-}
 
-/** 日历模式：通读某一天（时间正序），默认落在当天最新处 */
-async function loadDay(date) {
-  currentDay = date;
-  searchMode = false;
-  document.getElementById("datePicker").value = date;
-  document.querySelectorAll("[data-range]").forEach(b => b.classList.remove("active"));
-  document.getElementById("todayBtn").classList.toggle("on", date === todayStr());
-  const d = await (await fetch(buildQuery({ date, size: 8000, order: "asc" }))).json();
-  if (!d.count) {
-    // 这天没数据（例如过了午夜选“今天”、或选了非交易日）——给出明确的下一步
-    const near = d.nearest_date || "";
-    document.getElementById("allList").innerHTML =
-      `<div class="empty">${date} 没有消息<br>
-       <span style="font-size:12px">约牛只开放最近 7 天；也许今天还没开市</span>
-       ${near ? `<br><br><button onclick="loadDay('${near}')">去看最近有数据的 ${near}</button>` : ""}</div>`;
-    allMessages = []; hasMoreHistory = false; oldestLoadedId = 0;
-    renderTopHint(); updateCounts(0);
-    return;
-  }
-  allMessages = d.messages || [];
-  hasMoreHistory = !!d.has_more;
-  oldestLoadedId = oldestIdOf(allMessages);
-  seenKeys.clear();
-  allMessages.forEach(m => seenKeys.add(msgKey(m)));
-  stickToBottom = true;
-  renderMessages(allMessages, document.getElementById("allList"), "", true);
-  renderTopHint();
-  updateCounts(d.total);
-  loadTeacherColumn();
-}
 
-function onDatePick() {
-  const v = document.getElementById("datePicker").value;
-  if (!v) return;
-  if (v > todayStr()) { alert("还没到那天（约牛也只会给最近 7 天）"); return; }
-  loadDay(v);
-}
 
-function shiftDay(delta) {
-  const cur = currentDay || todayStr();
-  const d = new Date(cur + "T12:00:00");
-  d.setDate(d.getDate() + delta);
-  const v = fmtDayInput(d);
-  if (v > todayStr()) { alert("已经是今天了"); return; }
-  loadDay(v);
-}
 
-function loadToday() { return loadDay(todayStr()); }
 
-async function loadTeacherColumn() {
-  const extra = { size: 800, order: "desc", type: "teacher" };
-  if (currentDay) extra.date = currentDay;
-  else if (currentRangeDays) extra.days = currentRangeDays;
-  try {
-    const d = await (await fetch(buildQuery(extra))).json();
-    // 注意：API 对 order=desc 也会把结果反转为「时间正序」再返回（方便前端直接 append），
-    // 这里以前又 .reverse() 了一次 → 变成新→旧，导致贴底后底部是早上 08:11 的文章卡片，
-    // 而最新的老师消息被顶到看不见的顶部。
-    teacherMessages = d.messages || [];
-    renderMessages(teacherMessages, document.getElementById("teacherList"), "", true);
-    document.getElementById("teacherCount").textContent = teacherMessages.length +
-      (d.has_more ? "+ 条（仅显示最新部分）" : " 条");
-  } catch (e) {}
-}
 
-function oldestIdOf(msgs) {
-  for (const m of msgs) if (m.id) return m.id;
-  return 0;
-}
 
-/** 向历史（更早）加载一页，接在列表顶部并保持滚动位置。 */
-async function loadOlder() {
-  if (loadingOlder || !hasMoreHistory || !oldestLoadedId) return;
-  loadingOlder = true;
-  const hint = document.getElementById("topHint");
-  if (hint) hint.textContent = "加载更早…";
-  try {
-    const extra = { size: PAGE_OLDER, order: "desc", before_id: oldestLoadedId };
-    if (currentDay) extra.date = currentDay;
-    else if (currentRangeDays) extra.days = currentRangeDays;
-    const d = await (await fetch(buildQuery(extra))).json();
-    const older = d.messages || [];
-    if (!older.length) { hasMoreHistory = false; }
-    else {
-      const list = document.getElementById("allList");
-      const before = list.scrollHeight;
-      const keep = list.scrollTop;
-      // 取消可能还在跑的分批渲染，并保留已渲染节点
-      const st = _renderStates.get(list.id);
-      if (st && st.observer) { st.observer.disconnect(); st.observer = null; }
-      const frag = document.createDocumentFragment();
-      older.forEach(m => renderMsg(m, frag, searchKeyword));
-      list.insertBefore(frag, list.firstChild);
-      allMessages = older.concat(allMessages);
-      older.forEach(m => seenKeys.add(msgKey(m)));
-      oldestLoadedId = oldestIdOf(older) || oldestLoadedId;
-      hasMoreHistory = !!d.has_more;
-      list.scrollTop = keep + (list.scrollHeight - before);
-      loadNickCounts();
-      renderTopHint();
-      updateCounts();
-    }
-  } catch (e) {
-    console.warn("加载更早失败", e);
-  } finally {
-    loadingOlder = false;
-    renderTopHint();
-  }
-}
 
-function renderTopHint() {
-  let hint = document.getElementById("topHint");
-  const list = document.getElementById("allList");
-  if (!hint) {
-    hint = document.createElement("div");
-    hint.id = "topHint";
-    hint.className = "list-top-hint";
-    list.insertBefore(hint, list.firstChild);
-  }
-  if (loadingOlder) { hint.textContent = "加载更早…"; return; }
-  hint.innerHTML = hasMoreHistory
-    ? `已加载 ${allMessages.length} 条 · <button onclick="loadOlder()">↑ 加载更早</button>`
-    : `已到最早（共 ${allMessages.length} 条）`;
-}
 
-function updateCounts(total) {
-  const el = document.getElementById("allCount");
-  const scope = currentDay ? currentDay + "（日历）"
-    : (currentRangeDays ? `近${currentRangeDays}天` : "全部");
-  const t = (total != null) ? total : allMessages.length;
-  // 把实际载入的时间范围也显示出来，一眼就能确认“看的是哪天”
-  let span = "";
-  if (allMessages.length) {
-    const a = (allMessages[0].msg_date || "").slice(5, 16);
-    const b = (allMessages[allMessages.length - 1].msg_date || "").slice(5, 16);
-    span = ` · ${a} → ${b}`;
-  }
-  el.textContent = `${scope} · 已加载 ${allMessages.length} / ${t} 条${span}`;
-}
 
 async function doSearch() {
   const kw = document.getElementById("searchInput").value.trim();
@@ -1284,11 +1258,12 @@ async function doSearch() {
   const r = await fetch(url);
   const d = await r.json();
   if (d.error) { alert(d.error); return; }
-  searchMode = true;
+  enterSearch();
   searchKeyword = kw;
   renderMessages(d.messages || [], document.getElementById("allList"), kw);
   document.getElementById("allCount").textContent =
-    `搜索命中 ${d.total || 0} 条` + (d.truncated ? `（显示最新 ${(d.messages || []).length} 条，可加日期范围缩小）` : "");
+    `命中 ${d.total || 0} 条` + (d.truncated ? `（显示最新 ${(d.messages || []).length}）` : "");
+  document.getElementById("allCount").title = d.truncated ? "结果被截断，可加日期范围缩小" : "";
   document.getElementById("clearBtn").classList.add("show");
 }
 
@@ -1299,16 +1274,6 @@ function onSearchDateChange() {
   if (kw || uid) doSearch();
 }
 
-function clearSearch() {
-  searchMode = false;
-  searchKeyword = "";
-  document.getElementById("clearBtn").classList.remove("show");
-  document.getElementById("searchInput").value = "";
-  document.getElementById("userIdInput").value = "";
-  renderMessages(allMessages, document.getElementById("allList"), "", stickToBottom);
-  renderTopHint();
-  updateCounts();
-}
 
 function filterByUser(uid, nick) {
   if (!uid) return;
@@ -1317,72 +1282,52 @@ function filterByUser(uid, nick) {
   doSearch();
 }
 
-async function setRange(days) {
-  currentRangeDays = days;
-  currentDay = "";
-  document.getElementById("datePicker").value = "";
-  document.getElementById("todayBtn").classList.remove("on");
-  document.querySelectorAll("[data-range]").forEach(b =>
-    b.classList.toggle("active", String(days) === b.dataset.range));
-  await loadRange();
-}
 
 // ===================== 定位 / 滚动 =====================
 function listScrollTop() { return document.getElementById("allList").scrollTop; }
-function scrollToBottom(instant) {
-  // **只给用户主动动作（「回到底部」按钮 / 新消息提示）用**：同时贴两栏。
-  // 自动跟随一律走 followList()，一次只动一栏。
-  const al = document.getElementById("allList");
-  const tl = document.getElementById("teacherList");
-  al.scrollTop = al.scrollHeight;
-  tl.scrollTop = tl.scrollHeight;
-  _follow.allList = true;
-  _follow.teacherList = true;
-  pendingNew = 0;
-  stickToBottom = true;
-  document.getElementById("newMsgHint").style.display = "none";
-}
-function jumpTo(hhmm) {
-  // 以当前列表里最新一条所在的那天为基准（默认看当天节奏）。
-  // 以前用 toISOString() 取日期是 UTC，比本地早 8 小时会错一天，
-  // 导致“同一天优先”那段永远不命中，只能靠 fallback 碰运气。
-  const latest = allMessages.length ? allMessages[allMessages.length - 1] : null;
-  const baseDate = (latest && latest.msg_date)
-    ? latest.msg_date.slice(0, 10)
-    : (currentDay || todayStr());
-  const target = Math.floor(new Date(baseDate + "T" + hhmm + ":00").getTime() / 1000);
-  if (!isFinite(target)) return;
-  // 两栏都要跳：以前只对 allList 里的节点调 scrollIntoView，左栏纹丝不动
-  const a = jumpColumnToTs(document.getElementById("allList"), target);
-  const b = jumpColumnToTs(document.getElementById("teacherList"), target);
-  if (!a && !b) return;
-}
 
-/** 把某一栏定位到「ts >= target 的第一条」；都比它早就回到顶部。返回是否命中。 */
-function jumpColumnToTs(list, target) {
-  if (!list) return false;
-  for (const el of list.querySelectorAll(".msg[data-ts]")) {
-    if (Number(el.dataset.ts || 0) >= target) {
-      _follow[list.id] = false;      // 定位 = 主动离开底部，别让自动跟随又拽回去
-      el.scrollIntoView({ block: "start" });
-      el.classList.add("is-new");
-      setTimeout(() => el.classList.remove("is-new"), 1800);
-      return true;
-    }
-  }
-  _follow[list.id] = false;
-  list.scrollTop = 0;
-  return false;
-}
-function jumpToMessage(mid) {
-  if (!mid) return;
+/** 点引用 → 跳到原消息。已在列表里就直接滚过去；
+ *  不在就按 id 问后端它的时间，按时间点整段加载后再定位；
+ *  库里也没有（没同步到）就用引用里自带的发送时间跳过去。 */
+function findMsgEl(mid) {
   const list = document.getElementById("allList");
-  const el = list.querySelector(`.msg[data-mid="id:${mid}"]`) ||
-             list.querySelector(`.msg[data-mid="${mid}"]`);
-  if (!el) { alert("原消息不在当前列表中"); return; }
-  el.scrollIntoView({ block: "center" });
-  el.classList.add("is-new");
-  setTimeout(() => el.classList.remove("is-new"), 1800);
+  return list.querySelector(`.msg[data-mid="id:${mid}"]`) || list.querySelector(`.msg[data-mid="${mid}"]`);
+}
+async function jumpToMessage(mid, qdate) {
+  if (!mid && !qdate) return;
+  const here = mid && findMsgEl(mid);
+  if (here) { scrollToEl(document.getElementById("allList"), here, { center: true, highlight: true }); return; }
+  let ts = 0;
+  try {
+    const url = new URL("/api/messages/locate", location.origin);
+    if (INIT_ROOM) url.searchParams.set("room_id", INIT_ROOM);
+    url.searchParams.set("id", mid);
+    const d = await (await fetch(url)).json();
+    if (d.found) ts = d.ts;
+  } catch (e) {}
+  const exact = !!ts;
+  if (!ts && qdate) ts = Math.floor(new Date(qdate.replace(" ", "T")).getTime() / 1000);
+  if (!ts || !isFinite(ts)) { toast("找不到原消息"); return; }
+  if (searchMode) leaveSearch();
+  _linkMuteUntil = Date.now() + 1200;
+  await Promise.all([tlJump(TL.all, ts, "first"), tlJump(TL.teacher, ts, "last")]);
+  const el = mid && findMsgEl(mid);
+  if (el) scrollToEl(document.getElementById("allList"), el, { center: true, highlight: true });
+  else toast(exact ? "已跳到原消息附近" : "原消息还没同步到本地，已跳到它发出的时间");
+  afterAllMoved();
+}
+function toast(text) {
+  let t = document.getElementById("toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast";
+    t.className = "toast";
+    document.body.appendChild(t);
+  }
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => t.classList.remove("show"), 2600);
 }
 function onImgLoad(el) {
   // 图片撑开只影响它自己所在的那一栏
@@ -1398,6 +1343,489 @@ function followList(list) {
   list.scrollTop = list.scrollHeight;
 }
 
+
+// ===================== 连续时间线 =====================
+// 不再区分「日历某天 / 近N天 / 全部」三种视图：两栏各是一条连续时间线里的一个「窗口」，
+// 往上滚接更早、往下滚接更新；定位（915、日期、滑轨、日历）= 按时间点取前后一段。
+// 窗口有上限，超了就从远端裁掉，几百天的消息也不会把页面撑爆。
+const TL = {
+  all:     { id: "allList", type: "all", msgs: [], keys: seenKeys, hasOlder: false, hasNewer: false,
+             busy: false, gen: 0, lastDay: "", around: [300, 300], page: 500, latest: 800, max: 4000 },
+  teacher: { id: "teacherList", type: "teacher", msgs: [], keys: new Set(), hasOlder: false, hasNewer: false,
+             busy: false, gen: 0, lastDay: "", around: [150, 150], page: 200, latest: 300, max: 1500 },
+};
+let DAYS = [];            // /api/days：[{date, count, teacher, first_ts, last_ts}]
+let _cum = [0];           // 每天的累计条数（滑轨按条数比例映射，非交易日自然不占位置）
+let curDay = "";          // 右栏视口顶部那条消息所在的日期
+let _preSearch = null;    // 进搜索前右栏的位置，清除搜索时回到这里
+
+function colOf(list) { return list.id === "allList" ? TL.all : TL.teacher; }
+function listOf(col) { return document.getElementById(col.id); }
+function dayOfTs(ts) { return ts ? fmtDayInput(new Date(ts * 1000)) : ""; }
+function msgDay(m) { return (m.msg_date || "").slice(0, 10) || dayOfTs(m.ts); }
+function elDay(el) { return el.dataset.day || dayOfTs(+el.dataset.ts); }
+function weekOf(d) { return WEEK[new Date(d + "T12:00:00").getDay()] || ""; }
+/** 翻页游标：服务端给的 _cur 优先；实时推来的消息没有，用 ts 兜底（同秒的会重取，靠去重吃掉） */
+function curOf(m, dir) {
+  if (m._cur) return m._cur;
+  const t = m.ts || 0;
+  return dir === "older" ? `${t + 1}|-1|` : `${t}|-1|`;
+}
+function syncAliases() { allMessages = TL.all.msgs; teacherMessages = TL.teacher.msgs; }
+
+async function tlFetch(col, params) {
+  const url = new URL("/api/timeline", location.origin);
+  if (INIT_ROOM) url.searchParams.set("room_id", INIT_ROOM);
+  url.searchParams.set("type", col.type);
+  for (const k in params) url.searchParams.set(k, params[k]);
+  const d = await (await fetch(url)).json();
+  if (d.error) throw new Error(d.error);
+  return d;
+}
+
+/** 顶部小提示：已到最早 / 加载中 */
+function tlHint(col) {
+  const list = listOf(col);
+  if (!col.msgs.length || (col === TL.all && searchMode)) return;
+  let h = list.querySelector(":scope > .list-top-hint");
+  if (!h) {
+    h = document.createElement("div");
+    h.className = "list-top-hint";
+    list.insertBefore(h, list.firstChild);
+  }
+  h.textContent = col.busy === "older" ? "加载更早…"
+    : (col.hasOlder ? "上滑加载更早" : `已到最早（${msgDay(col.msgs[0])}）`);
+}
+
+/** 用一批消息整体替换窗口 */
+function tlReset(col, d, pinBottom) {
+  col.msgs = d.messages || [];
+  col.keys.clear();
+  col.msgs.forEach(m => col.keys.add(msgKey(m)));
+  col.hasOlder = !!d.has_older;
+  col.hasNewer = !!d.has_newer;
+  col.busy = false;
+  col.lastDay = col.msgs.length ? msgDay(col.msgs[col.msgs.length - 1]) : "";
+  syncAliases();
+  if (col === TL.all && searchMode) return;          // 正在看搜索结果：只换数据，不动界面
+  renderMessages(col.msgs, listOf(col), "", pinBottom);
+  tlHint(col);
+}
+
+/** 渲染一批消息成片段（自带日期分隔） */
+function tlFrag(col, msgs, lastDay) {
+  const frag = document.createDocumentFragment();
+  const st = { lastDate: lastDay || "" };
+  for (const m of msgs) {
+    appendDaySep(frag, msgDay(m), st);
+    renderMsg(m, frag, "");
+    col.keys.add(msgKey(m));
+  }
+  return { frag, lastDay: st.lastDate };
+}
+
+/** 视口里第一条可见的消息（二分，几千条也不卡） */
+function firstVisible(list) {
+  const ch = list.children, top = list.getBoundingClientRect().top + 4;   // 定位时留了 2px 缝，别把上一条的边算进来
+  let lo = 0, hi = ch.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (ch[mid].getBoundingClientRect().bottom > top) { ans = mid; hi = mid - 1; } else lo = mid + 1;
+  }
+  if (ans < 0) return null;
+  for (let i = ans; i < ch.length; i++) if (ch[i].classList.contains("msg")) return ch[i];
+  return null;
+}
+
+/** 在视口上方增删内容时，保持眼前那条消息不动 */
+function keepAnchor(list, fn) {
+  const a = firstVisible(list);
+  const before = a ? a.getBoundingClientRect().top : 0;
+  fn();
+  if (a && a.isConnected) list.scrollTop += a.getBoundingClientRect().top - before;
+}
+
+function tlPrepend(col, msgs) {
+  const list = listOf(col);
+  const { frag, lastDay } = tlFrag(col, msgs, "");
+  const hint = list.querySelector(":scope > .list-top-hint");
+  keepAnchor(list, () => {
+    const firstOld = hint ? hint.nextElementSibling : list.firstElementChild;
+    // 新批次最后一天 = 原来第一天：原来那条日期分隔就重复了
+    if (firstOld && firstOld.classList.contains("day-sep") && firstOld.dataset.day === lastDay) firstOld.remove();
+    list.insertBefore(frag, hint ? hint.nextSibling : list.firstChild);
+  });
+  col.msgs = msgs.concat(col.msgs);
+  syncAliases();
+  loadNickCounts();
+}
+
+function tlAppend(col, msgs, highlight) {
+  const list = listOf(col);
+  const empty = list.querySelector(":scope > .empty, :scope > .loading");
+  if (empty) empty.remove();
+  const { frag, lastDay } = tlFrag(col, msgs, col.lastDay);
+  if (highlight) frag.querySelectorAll(".msg").forEach(n => {
+    n.classList.add("is-new");
+    setTimeout(() => n.classList.remove("is-new"), 1800);
+  });
+  list.appendChild(frag);
+  col.lastDay = lastDay;
+  col.msgs = col.msgs.concat(msgs);
+  syncAliases();
+  if (!list.querySelector(":scope > .list-top-hint")) tlHint(col);
+  loadNickCounts();
+}
+
+/** 窗口超上限就从远端裁掉（side=top 裁最早的，bottom 裁最新的） */
+function tlTrim(col, side) {
+  const k = col.msgs.length - col.max;
+  if (k <= 0) return;
+  const list = listOf(col);
+  if (side === "top") {
+    keepAnchor(list, () => {
+      const hint = list.querySelector(":scope > .list-top-hint");
+      let n = hint ? hint.nextElementSibling : list.firstElementChild, removed = 0;
+      while (n && removed < k) {
+        const nx = n.nextElementSibling;
+        if (n.classList.contains("msg")) removed++;
+        n.remove();
+        n = nx;
+      }
+      if (n && n.classList.contains("msg")) {          // 裁到一天中间：给剩下的第一条补日期分隔
+        const f = document.createDocumentFragment();
+        appendDaySep(f, elDay(n), { lastDate: "" });
+        list.insertBefore(f, n);
+      }
+    });
+    col.msgs.slice(0, k).forEach(m => col.keys.delete(msgKey(m)));
+    col.msgs = col.msgs.slice(k);
+    col.hasOlder = true;
+  } else {
+    let n = list.lastElementChild, removed = 0;
+    while (n && removed < k) {
+      const pv = n.previousElementSibling;
+      if (n.classList.contains("msg")) removed++;
+      n.remove();
+      n = pv;
+    }
+    while (n && n.classList.contains("day-sep")) { const pv = n.previousElementSibling; n.remove(); n = pv; }
+    col.msgs.slice(-k).forEach(m => col.keys.delete(msgKey(m)));
+    col.msgs = col.msgs.slice(0, -k);
+    col.hasNewer = true;
+    col.lastDay = col.msgs.length ? msgDay(col.msgs[col.msgs.length - 1]) : "";
+  }
+  syncAliases();
+  tlHint(col);
+}
+
+async function tlLoadOlder(col) {
+  if (col.busy || !col.hasOlder || !col.msgs.length || (col === TL.all && searchMode)) return;
+  const gen = col.gen;
+  col.busy = "older";
+  tlHint(col);
+  try {
+    const d = await tlFetch(col, { older: curOf(col.msgs[0], "older"), size: col.page });
+    if (gen !== col.gen) return;
+    const fresh = d.messages.filter(m => !col.keys.has(msgKey(m)));
+    col.hasOlder = !!d.has_older && fresh.length > 0;
+    col.busy = false;
+    if (fresh.length) { tlPrepend(col, fresh); tlTrim(col, "bottom"); }
+  } catch (e) {
+    console.warn("加载更早失败", e);
+  } finally {
+    if (gen === col.gen) { col.busy = false; tlHint(col); }
+  }
+}
+
+async function tlLoadNewer(col) {
+  if (col.busy || !col.hasNewer || !col.msgs.length || (col === TL.all && searchMode)) return;
+  const gen = col.gen;
+  col.busy = "newer";
+  try {
+    const d = await tlFetch(col, { newer: curOf(col.msgs[col.msgs.length - 1], "newer"), size: col.page });
+    if (gen !== col.gen) return;
+    const fresh = d.messages.filter(m => !col.keys.has(msgKey(m)));
+    col.hasNewer = !!d.has_newer && fresh.length > 0;
+    col.busy = false;
+    if (fresh.length) { tlAppend(col, fresh); tlTrim(col, "top"); }
+  } catch (e) {
+    console.warn("加载更新失败", e);
+  } finally {
+    if (gen === col.gen) col.busy = false;
+  }
+}
+
+/** 窗口是否已覆盖这个时刻（覆盖就本地滚，不用再请求） */
+function covers(col, ts) {
+  const m = col.msgs;
+  if (!m.length) return !col.hasOlder && !col.hasNewer;
+  return (ts >= (m[0].ts || 0) || !col.hasOlder) && (ts <= (m[m.length - 1].ts || 0) || !col.hasNewer);
+}
+
+async function tlLatest(col) {
+  const gen = ++col.gen;
+  col.busy = "jump";
+  try {
+    const d = await tlFetch(col, { size: col.latest });
+    if (gen !== col.gen) return;
+    tlReset(col, d, true);
+  } finally { if (gen === col.gen) col.busy = false; }
+}
+
+/** 跳到某个时刻。how="first"：该时刻起第一条置顶；"last"：该时刻前最后一条置顶 */
+async function tlJump(col, ts, how, opt) {
+  if (!covers(col, ts)) {
+    const gen = ++col.gen;
+    col.busy = "jump";
+    try {
+      const d = await tlFetch(col, { at: ts, before: col.around[0], after: col.around[1] });
+      if (gen !== col.gen) return;
+      tlReset(col, d, false);
+    } finally { if (gen === col.gen) col.busy = false; }
+  }
+  positionAt(col, ts, how, opt);
+}
+
+function positionAt(col, ts, how, opt) {
+  opt = opt || {};
+  const list = listOf(col);
+  const els = list.querySelectorAll(":scope > .msg");
+  if (!els.length) return;
+  const lower = t => {                       // 第一个 ts >= t 的下标
+    let lo = 0, hi = els.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (+els[mid].dataset.ts >= t) hi = mid; else lo = mid + 1; }
+    return lo;
+  };
+  let el;
+  if (how === "last") el = els[Math.max(0, lower(ts + 1) - 1)];
+  else { const i = lower(ts); el = els[Math.min(i, els.length - 1)]; }
+  scrollToEl(list, el, opt);
+}
+
+/** 把某条消息滚到本栏顶部（前面紧挨着日期分隔就连分隔一起露出来） */
+function scrollToEl(list, el, opt) {
+  opt = opt || {};
+  const target = (!opt.center && !opt.bottom && el.previousElementSibling && el.previousElementSibling.classList.contains("day-sep"))
+    ? el.previousElementSibling : el;
+  _follow[list.id] = false;      // 定位 = 主动离开底部，别让自动跟随又拽回去
+  _pinning[list.id] = false;     // 刚加载完的贴底定时器别再把它拽回底部
+  const go = () => {
+    const r = target.getBoundingClientRect(), lr = list.getBoundingClientRect();
+    const d = opt.center ? (r.top + r.height / 2) - (lr.top + lr.height / 2)
+      : opt.bottom ? r.bottom - lr.bottom + 6
+      : r.top - lr.top - 2;
+    const before = list.scrollTop;
+    list.scrollTop += d;
+    return Math.abs(list.scrollTop - before);
+  };
+  go();
+  // .msg 用了 content-visibility:auto：首次落点按估算高度算，
+  // 视口附近的消息真实渲染后高度会变，目标被顶偏几百像素。逐帧校正到稳定为止。
+  const token = (list._jumpToken = (list._jumpToken || 0) + 1);
+  let n = 0, still = 0;
+  const fix = () => {
+    if (list._jumpToken !== token) return;          // 又点了别的定位，放弃这一轮
+    const moved = go();
+    _follow[list.id] = false;
+    still = moved < 1 ? still + 1 : 0;
+    if (++n < 40 && still < 3) requestAnimationFrame(fix);
+  };
+  requestAnimationFrame(fix);
+  if (opt.highlight) {
+    el.classList.add("is-new");
+    setTimeout(() => el.classList.remove("is-new"), 1800);
+  }
+}
+
+// ---------- 对外的定位动作 ----------
+let _linkMuteUntil = 0;          // 显式定位后的短时间内，老师栏不走「联动」，按定位规则摆
+function dayTs(day, hhmm) { return Math.floor(new Date(day + "T" + hhmm + ":00").getTime() / 1000); }
+function latestDay() { return DAYS.length ? DAYS[DAYS.length - 1].date : (TL.all.lastDay || todayStr()); }
+
+async function jumpToTs(ts, opt) {
+  if (!isFinite(ts)) return;
+  if (searchMode) leaveSearch();
+  _linkMuteUntil = Date.now() + 1200;
+  await Promise.all([
+    tlJump(TL.all, ts, "first", opt),
+    tlJump(TL.teacher, ts, "first", opt),
+  ]);
+  afterAllMoved();
+}
+function jumpTo(hhmm) {
+  // 以右栏当前正在看的那天为基准：看到 3 月 12 日，点 1430 就去 3 月 12 日 14:30
+  jumpToTs(dayTs(curDay || latestDay(), hhmm), { highlight: true });
+}
+function jumpToDay(date) {
+  const d = DAYS.find(x => x.date === date);
+  jumpToTs(d ? d.first_ts : dayTs(date, "00:00"));
+}
+/** 跳到当前这一天的最后一条（贴着底部摆），历史日期也能用 */
+async function jumpToDayEnd() {
+  const day = curDay || latestDay();
+  const d = DAYS.find(x => x.date === day);
+  const ts = d ? d.last_ts : dayTs(day, "23:59") + 59;
+  if (searchMode) leaveSearch();
+  _linkMuteUntil = Date.now() + 1200;
+  await Promise.all([
+    tlJump(TL.all, ts, "last", { bottom: true }),
+    tlJump(TL.teacher, ts, "last", { bottom: true }),
+  ]);
+  afterAllMoved();
+}
+function dayStep(delta) {
+  if (!DAYS.length) return;
+  let i = DAYS.findIndex(x => x.date === curDay);
+  if (i < 0) i = DAYS.length - 1;
+  const j = Math.max(0, Math.min(DAYS.length - 1, i + delta));
+  if (j !== i) jumpToDay(DAYS[j].date);
+}
+
+/** 回到最新（「最新」按钮 / 新消息提示） */
+async function scrollToBottom() {
+  if (searchMode) leaveSearch();
+  const al = listOf(TL.all), tl = listOf(TL.teacher);
+  const jobs = [];
+  if (TL.all.hasNewer) jobs.push(tlLatest(TL.all));
+  else pinToBottom(al);
+  if (TL.teacher.hasNewer) jobs.push(tlLatest(TL.teacher));
+  else pinToBottom(tl);
+  await Promise.all(jobs);
+  _follow.allList = true;
+  _follow.teacherList = true;
+  pendingNew = 0;
+  stickToBottom = true;
+  document.getElementById("newMsgHint").style.display = "none";
+  afterAllMoved();
+}
+async function gotoLatest() {
+  await Promise.all([tlLatest(TL.all), tlLatest(TL.teacher)]);
+  pendingNew = 0;
+  document.getElementById("newMsgHint").style.display = "none";
+  afterAllMoved();
+}
+/** 同步完成等场景：贴底在看最新时只补新增，不整页重渲染；否则什么也不动 */
+function loadMessages() {
+  refreshDays();
+  if (searchMode) return;
+  if (!TL.all.msgs.length) return gotoLatest();
+  for (const col of [TL.all, TL.teacher]) {
+    if (col.hasNewer || col.busy) continue;   // 在翻历史：新消息等你滚到底再接
+    col.hasNewer = true;
+    const list = listOf(col);
+    tlLoadNewer(col).then(() => followList(list));
+  }
+}
+
+// ---------- 当前日期 / 计数 ----------
+function afterAllMoved() { updateCurDay(); drawScrubThumb(); }
+function updateCurDay() {
+  if (searchMode) return;
+  const el = firstVisible(listOf(TL.all));
+  const d = el ? elDay(el) : (TL.all.lastDay || "");
+  if (d !== curDay) { curDay = d; _teacherPeek = ""; syncScrubMonth(); }
+  updateCounts();
+}
+function dayInfo(d) { return DAYS.find(x => x.date === d); }
+/** 老师栏标题按「老师栏自己顶部那条」的日期来写——
+ *  右栏那天老师没发言时，老师栏停在前一天的发言上，标题要跟着它走，别写成「0 条」 */
+let _teacherPeek = "";          // 点了「看最近一次发言」的那天：这天不再盖「没有发言」
+function teacherDayEmpty() {
+  if (!_linkOn || searchMode || !curDay || _teacherPeek === curDay) return false;
+  const di = dayInfo(curDay);
+  return !!di && !di.teacher;
+}
+function updateTeacherEmpty() {
+  const box = document.getElementById("teacherEmpty");
+  if (!box) return;
+  if (!teacherDayEmpty()) { box.style.display = "none"; return; }
+  // 最近一次老师发言：老师栏窗口里早于这天的最后一条
+  const before = TL.teacher.msgs.filter(m => msgDay(m) < curDay);
+  const last = before.length ? before[before.length - 1] : null;
+  box.innerHTML = `<b>${curDay.slice(5)} 周${weekOf(curDay)}</b>老师这天没有发言` +
+    (last ? `<br><button onclick="peekTeacher()">看最近一次发言（${esc(msgDay(last).slice(5))} ${esc(fmtTime(last.msg_date).slice(0, 5))}）</button>` : "");
+  box.style.display = "block";
+}
+function peekTeacher() {
+  _teacherPeek = curDay;
+  updateTeacherEmpty();
+  updateTeacherHeader();
+  const tl = listOf(TL.teacher);
+  const before = TL.teacher.msgs.filter(m => msgDay(m) < curDay);
+  if (before.length) positionAt(TL.teacher, before[before.length - 1].ts, "last");
+}
+function updateTeacherHeader() {
+  const tc = document.getElementById("teacherCount");
+  if (!tc) return;
+  updateTeacherEmpty();
+  // 联动时老师栏以右栏那天为准，标题也写那天（0 条也照实写）
+  const cdi = curDay && dayInfo(curDay);
+  if (_linkOn && !searchMode && cdi && _teacherPeek !== curDay) {
+    tc.textContent = `${curDay.slice(5)} 周${weekOf(curDay)} · ${cdi.teacher} 条`;
+    tc.title = "";
+    return;
+  }
+  const el = firstVisible(listOf(TL.teacher));
+  const d = el ? elDay(el) : "";
+  const di = d && dayInfo(d);
+  tc.textContent = d ? `${d.slice(5)} 周${weekOf(d)} · ${di ? di.teacher : 0} 条` : "";
+  tc.title = d && d !== curDay ? `右栏 ${curDay.slice(5)} 老师没有发言，这里显示的是 ${d.slice(5)} 的` : "";
+}
+function updateCounts() {
+  const lbl = document.getElementById("dayBtn");
+  const info = document.getElementById("allCount");
+  const tc = document.getElementById("teacherCount");
+  const di = dayInfo(curDay);
+  if (lbl) {
+    lbl.textContent = curDay ? `${curDay.slice(5)} 周${weekOf(curDay)}` : "—";
+    lbl.title = curDay ? `${dayLabel(curDay)}（点开日历）` : "点开日历";
+  }
+  const i = DAYS.findIndex(x => x.date === curDay);
+  const prev = document.getElementById("dayPrev"), next = document.getElementById("dayNext");
+  if (prev) prev.disabled = i <= 0;
+  if (next) next.disabled = i < 0 || i >= DAYS.length - 1;
+  updateTeacherHeader();
+  if (searchMode || !info) return;
+  info.textContent = di ? `${di.count} 条 · 老师 ${di.teacher}` : "";
+  info.title = di ? `${dayLabel(curDay)}：共 ${di.count} 条，老师 ${di.teacher} 条` : "";
+}
+
+async function refreshDays() {
+  try {
+    const url = new URL("/api/days", location.origin);
+    if (INIT_ROOM) url.searchParams.set("room_id", INIT_ROOM);
+    DAYS = (await (await fetch(url)).json()).days || [];
+  } catch (e) { return; }
+  rebuildCum();
+  updateCounts();
+  if (document.getElementById("calPop").style.display === "block") renderCal();
+}
+function rebuildCum() {
+  _cum = [0];
+  for (const d of DAYS) _cum.push(_cum[_cum.length - 1] + d.count);
+  drawScrub();
+}
+/** 实时消息进来：顺手把当天的计数加上，滑轨/日历不用等下一次 /api/days */
+function bumpDays(m, isTeacher) {
+  const day = msgDay(m), ts = m.ts || 0;
+  let d = DAYS.length && DAYS[DAYS.length - 1].date === day ? DAYS[DAYS.length - 1] : null;
+  if (!d) {
+    if (DAYS.length && day < DAYS[DAYS.length - 1].date) return;
+    d = { date: day, count: 0, teacher: 0, first_ts: ts, last_ts: ts };
+    DAYS.push(d);
+  }
+  d.count++;
+  if (isTeacher) d.teacher++;
+  if (ts > d.last_ts) d.last_ts = ts;
+  _cum = [0];
+  for (const x of DAYS) _cum.push(_cum[_cum.length - 1] + x.count);
+  clearTimeout(bumpDays._t);
+  bumpDays._t = setTimeout(() => { drawScrub(); updateCounts(); }, 400);
+}
+
+// ---------- 滚动：两个方向自动加载 + 当前日期 + 老师栏联动 ----------
+let _scrollRaf = 0;
 document.addEventListener("DOMContentLoaded", () => {
   for (const id of ["allList", "teacherList"]) {
     const list = document.getElementById(id);
@@ -1406,19 +1834,426 @@ document.addEventListener("DOMContentLoaded", () => {
       if (_pinning[id]) return;      // 正在「落地到底部」，忽略清空/追加引发的伪滚动事件
       const near = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
       _follow[id] = near;
-      if (id !== "allList") return;
+      const col = colOf(list);
+      if (!(col === TL.all && searchMode)) {
+        if (list.scrollTop < 800) tlLoadOlder(col);
+        if (list.scrollHeight - list.scrollTop - list.clientHeight < 800) tlLoadNewer(col);
+      }
+      if (id !== "allList") {
+        if (!list._hdrRaf) list._hdrRaf = requestAnimationFrame(() => { list._hdrRaf = 0; updateTeacherHeader(); });
+        return;
+      }
       stickToBottom = near;
-      if (near) {
+      if (near && !TL.all.hasNewer) {
         pendingNew = 0;
         document.getElementById("newMsgHint").style.display = "none";
       }
-      // 滚到顶部→自动加载更早（正在分批渲染或搜索时不管，避免抖动）
-      if (list.scrollTop < 120 && !searchMode && !loadingOlder && !_renderStates.has(id)) {
-        loadOlder();
-      }
+      if (searchMode) return;
+      if (!_scrollRaf) _scrollRaf = requestAnimationFrame(() => {
+        _scrollRaf = 0;
+        updateCurDay();
+        drawScrubThumb();
+      });
+      scheduleLink();
     }, { passive: true });
   }
+  initLinkBtn();
+  initScrub();
 });
+
+// 老师栏联动：右栏滚到哪个时刻，老师栏就把「那一刻之前最近的一条老师发言」摆到顶部
+let _linkOn = true;
+try { _linkOn = localStorage.getItem("niulai.link") !== "0"; } catch (e) {}
+let _linkTimer = null;
+function initLinkBtn() {
+  const b = document.getElementById("linkBtn");
+  if (b) b.classList.toggle("on", _linkOn);
+}
+function toggleLink() {
+  _linkOn = !_linkOn;
+  try { localStorage.setItem("niulai.link", _linkOn ? "1" : "0"); } catch (e) {}
+  initLinkBtn();
+  updateTeacherHeader();
+  if (_linkOn) linkTeacher();
+}
+function scheduleLink() {
+  if (!_linkOn) return;
+  clearTimeout(_linkTimer);
+  _linkTimer = setTimeout(linkTeacher, 160);
+}
+async function linkTeacher() {
+  if (!_linkOn || searchMode || Date.now() < _linkMuteUntil) return;
+  const al = listOf(TL.all), tl = listOf(TL.teacher);
+  if (_follow.allList && !TL.all.hasNewer) {        // 右栏贴着最新：老师栏也贴最新
+    if (TL.teacher.hasNewer) await tlLatest(TL.teacher);
+    else { tl.scrollTop = tl.scrollHeight; _follow.teacherList = true; }
+    return;
+  }
+  const el = firstVisible(al);
+  if (el) await tlJump(TL.teacher, +el.dataset.ts, "last");
+}
+
+// ---------- 右侧时间滑轨（按月显示） ----------
+// 一次只铺一个自然月：几个月、几百天的历史也能一天分到 ~30px，好点准。
+// 顶部 ▲ 上个月、底部 ▼ 下个月；滑轨上滚滚轮按天前后挪；消息滚到别的月，滑轨自动跟过去。
+let scrubMonth = "";      // "YYYY-MM"，空 = 最新一个月
+let _lastCurMonth = "";
+let _sd = [], _scum = [0];   // 当前月的天、累计条数
+function scrubMonths() {
+  const out = [];
+  for (const d of DAYS) { const m = d.date.slice(0, 7); if (out[out.length - 1] !== m) out.push(m); }
+  return out;
+}
+function scrubData() {
+  const months = scrubMonths();
+  if (!scrubMonth || !months.includes(scrubMonth)) scrubMonth = months[months.length - 1] || "";
+  _sd = DAYS.filter(d => d.date.startsWith(scrubMonth));
+  _scum = [0];
+  for (const d of _sd) _scum.push(_scum[_scum.length - 1] + d.count);
+  return months;
+}
+function scrubTotal() { return _scum[_scum.length - 1] || 0; }
+function trackTop() { return document.getElementById("scrubTrack").offsetTop; }
+/** 位置（0~1）→ 当月某天某刻 */
+function fracToTs(f) {
+  const total = scrubTotal();
+  if (!total) return 0;
+  const target = Math.max(0, Math.min(total - 1e-6, f * total));
+  let lo = 0, hi = _sd.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (_scum[mid] <= target) lo = mid; else hi = mid - 1; }
+  const d = _sd[lo];
+  const w = d.count ? (target - _scum[lo]) / d.count : 0;
+  return Math.round(d.first_ts + w * (d.last_ts - d.first_ts));
+}
+/** 时刻 → 位置；不在当前显示的月里返回 null */
+function tsToFrac(ts) {
+  const total = scrubTotal();
+  if (!total || !_sd.length) return null;
+  const day = dayOfTs(ts);
+  if (!day.startsWith(scrubMonth)) return null;
+  let lo = 0, hi = _sd.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (_sd[mid].first_ts <= ts) lo = mid; else hi = mid - 1; }
+  const d = _sd[lo];
+  const span = d.last_ts - d.first_ts;
+  const w = span > 0 ? Math.max(0, Math.min(1, (ts - d.first_ts) / span)) : 0;
+  return (_scum[lo] + w * d.count) / total;
+}
+function dayFrac(date) {           // 某天开头在滑轨上的位置
+  const i = _sd.findIndex(x => x.date === date);
+  return i < 0 || !scrubTotal() ? null : _scum[i] / scrubTotal();
+}
+function fmtTsFull(ts) {
+  const dt = new Date(ts * 1000), day = fmtDayInput(dt);
+  return `${day} 周${weekOf(day)} ${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+}
+function scrubGeom() {
+  const r = document.getElementById("scrubTrack").getBoundingClientRect();
+  return { top: r.top, h: Math.max(1, r.height) };
+}
+function drawScrub() {
+  const scrub = document.getElementById("scrub");
+  if (!scrub) return;
+  const months = scrubData();
+  const total = scrubTotal();
+  scrub.style.display = (total && !searchMode) ? "" : "none";
+  if (!total) return;
+  const mi = months.indexOf(scrubMonth);
+  const [y, m] = scrubMonth.split("-");
+  const mon = document.getElementById("scrubMon");
+  mon.textContent = `${Number(m)}月`;
+  mon.title = `${y}年${Number(m)}月 · ${_sd.length} 天有消息 · ${total} 条`;
+  document.getElementById("scrubUp").disabled = mi <= 0;
+  document.getElementById("scrubDown").disabled = mi >= months.length - 1;
+  document.getElementById("scrubUp").title = mi > 0 ? `上个月（${months[mi - 1].replace("-", "年")}月）` : "已是最早的月份";
+  document.getElementById("scrubDown").title = mi < months.length - 1 ? `下个月（${months[mi + 1].replace("-", "年")}月）` : "已是最新的月份";
+
+  const cv = document.getElementById("scrubCanvas");
+  const h = cv.clientHeight, w = cv.clientWidth, dpr = window.devicePixelRatio || 1;
+  if (!h || !w) return;
+  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  const g = cv.getContext("2d");
+  g.scale(dpr, dpr);
+  g.clearRect(0, 0, w, h);
+  // 每天一段，颜色深浅 = 当天老师发言多少；天与天之间一道细线
+  const maxT = Math.max(1, ..._sd.map(d => d.teacher));
+  const labels = document.getElementById("scrubLabels");
+  labels.innerHTML = "";
+  let lastY = -99;
+  _sd.forEach((d, i) => {
+    const y0 = _scum[i] / total * h, y1 = _scum[i + 1] / total * h;
+    g.fillStyle = `rgba(212,56,13,${(0.12 + 0.6 * (d.teacher / maxT)).toFixed(3)})`;
+    g.fillRect(0, y0, w, Math.max(1, y1 - y0));
+    if (i > 0) { g.fillStyle = "rgba(255,255,255,.9)"; g.fillRect(0, y0, w, 1); }
+    // 悬停展开时的日期刻度（放不下就跳过）
+    if (y0 - lastY >= 13) {
+      lastY = y0;
+      const s = document.createElement("span");
+      s.textContent = `${Number(d.date.slice(8))}日 ${weekOf(d.date)}`;
+      s.style.top = y0 + "px";
+      if (d.date === curDay) s.className = "cur";
+      labels.appendChild(s);
+    }
+  });
+  drawScrubThumb();
+}
+function drawScrubThumb() {
+  const th = document.getElementById("scrubThumb");
+  if (!th || !scrubTotal()) return;
+  const el = firstVisible(listOf(TL.all));
+  const ts = el ? +el.dataset.ts : (TL.all.msgs.length ? TL.all.msgs[TL.all.msgs.length - 1].ts : 0);
+  const f = ts ? tsToFrac(ts) : null;
+  if (f == null) { th.style.display = "none"; return; }      // 正在看的不在这个月
+  th.style.display = "";
+  th.style.top = (trackTop() + f * document.getElementById("scrubTrack").clientHeight - 1) + "px";
+}
+/** 消息滚到了别的月份：滑轨跟过去 */
+function syncScrubMonth() {
+  const m = (curDay || "").slice(0, 7);
+  if (!m || m === _lastCurMonth) return;
+  _lastCurMonth = m;
+  if (m !== scrubMonth) { scrubMonth = m; drawScrub(); }
+}
+function scrubMonthStep(delta) {
+  const months = scrubMonths();
+  const i = months.indexOf(scrubMonth);
+  const j = Math.max(0, Math.min(months.length - 1, i + delta));
+  if (j === i) return;
+  scrubMonth = months[j];
+  drawScrub();
+}
+function initScrub() {
+  const scrub = document.getElementById("scrub");
+  if (!scrub) return;
+  const bubble = document.getElementById("scrubBubble");
+  const thumb = document.getElementById("scrubThumb");
+  let dragging = false;
+  const bubbleAt = (f, text) => {
+    const h = document.getElementById("scrubTrack").clientHeight;
+    bubble.textContent = text;
+    bubble.style.top = (trackTop() + f * h) + "px";
+    bubble.style.display = text ? "block" : "none";
+  };
+  const show = ev => {
+    const { top, h } = scrubGeom();
+    const f = Math.max(0, Math.min(1, (ev.clientY - top) / h));
+    const ts = fracToTs(f);
+    bubbleAt(f, ts ? fmtTsFull(ts) : "");
+    return { ts, f };
+  };
+  const onArrow = ev => ev.target.closest(".scrub-arrow, .scrub-mon");
+  scrub.addEventListener("pointermove", ev => {
+    if (onArrow(ev) && !dragging) { bubble.style.display = "none"; return; }
+    const { ts, f } = show(ev);
+    if (dragging && ts) {
+      thumb.style.display = "";
+      thumb.style.top = (trackTop() + f * document.getElementById("scrubTrack").clientHeight - 1) + "px";
+    }
+  });
+  scrub.addEventListener("pointerleave", () => { if (!dragging) bubble.style.display = "none"; });
+  scrub.addEventListener("pointerdown", ev => {
+    if (onArrow(ev)) return;
+    dragging = true;
+    scrub.setPointerCapture(ev.pointerId);
+    scrub.classList.add("drag");
+    show(ev);
+    ev.preventDefault();
+  });
+  scrub.addEventListener("pointerup", ev => {
+    if (!dragging) return;
+    dragging = false;
+    scrub.classList.remove("drag");
+    const { ts } = show(ev);
+    bubble.style.display = "none";
+    if (ts) jumpToTs(ts);
+  });
+  scrub.addEventListener("pointercancel", () => { dragging = false; scrub.classList.remove("drag"); bubble.style.display = "none"; });
+
+  // 滚轮：每一格挪一天（触控板的细小滚动累积够了才算一格），停下来 250ms 再真正跳
+  let acc = 0, wheelDay = "", wheelT = null, hideT = null;
+  scrub.addEventListener("wheel", ev => {
+    ev.preventDefault();
+    if (!DAYS.length) return;
+    acc += ev.deltaY;
+    if (Math.abs(acc) < 50) return;
+    const step = acc > 0 ? 1 : -1;
+    acc = 0;
+    let i = DAYS.findIndex(x => x.date === (wheelDay || curDay));
+    if (i < 0) i = DAYS.length - 1;
+    const j = Math.max(0, Math.min(DAYS.length - 1, i + step));
+    wheelDay = DAYS[j].date;
+    if (!wheelDay.startsWith(scrubMonth)) { scrubMonth = wheelDay.slice(0, 7); drawScrub(); }
+    const f = dayFrac(wheelDay) ?? 0;
+    bubbleAt(f, `${wheelDay} 周${weekOf(wheelDay)} · ${DAYS[j].count} 条`);
+    thumb.style.display = "";
+    thumb.style.top = (trackTop() + f * document.getElementById("scrubTrack").clientHeight - 1) + "px";
+    clearTimeout(wheelT);
+    clearTimeout(hideT);
+    wheelT = setTimeout(() => {
+      const d = wheelDay;
+      wheelDay = "";
+      jumpToDay(d);
+      hideT = setTimeout(() => { if (!scrub.matches(":hover")) bubble.style.display = "none"; }, 800);
+    }, 250);
+  }, { passive: false });
+  if (window.ResizeObserver) new ResizeObserver(() => drawScrub()).observe(scrub);
+}
+
+// ---------- 热力日历 ----------
+let _calMetric = "count";
+function toggleCal(force) {
+  const pop = document.getElementById("calPop");
+  const show = force != null ? force : pop.style.display !== "block";
+  if (show) {
+    togglePinPanel(false);
+    pop.style.top = document.querySelector(".col-right .search-box").offsetHeight + "px";
+    pop.style.display = "block";
+    renderCal();
+  } else pop.style.display = "none";
+  document.getElementById("dayBtn").classList.toggle("open", show);
+}
+function setCalMetric(m) { _calMetric = m; renderCal(); }
+function renderCal() {
+  const body = document.getElementById("calBody");
+  document.querySelectorAll("#calPop [data-metric]").forEach(b =>
+    b.classList.toggle("on", b.dataset.metric === _calMetric));
+  if (!DAYS.length) { body.innerHTML = '<div class="empty">还没有消息</div>'; return; }
+  const byDate = new Map(DAYS.map(d => [d.date, d]));
+  const val = d => d ? (_calMetric === "teacher" ? d.teacher : d.count) : 0;
+  // 颜色分 4 档：按有数据那些天的分位数切，少数特别热闹的日子不会把其余全压成浅色
+  const vals = DAYS.map(val).filter(v => v > 0).sort((a, b) => a - b);
+  const q = p => vals.length ? vals[Math.min(vals.length - 1, Math.floor(p * vals.length))] : 1;
+  const cuts = [q(.25), q(.5), q(.75)];
+  const lvl = v => v <= 0 ? 0 : v <= cuts[0] ? 1 : v <= cuts[1] ? 2 : v <= cuts[2] ? 3 : 4;
+  // 从第一天所在周的周一，到最后一天（或今天）所在周的周日
+  const first = new Date(DAYS[0].date + "T12:00:00");
+  const lastStr = [DAYS[DAYS.length - 1].date, todayStr()].sort()[1];
+  const last = new Date(lastStr + "T12:00:00");
+  const start = new Date(first); start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+  const cells = [], months = [];
+  let col = 0, lastMon = "";
+  for (let d = new Date(start); d <= last || (d.getDay() + 6) % 7 !== 0; d.setDate(d.getDate() + 1)) {
+    const row = (d.getDay() + 6) % 7;
+    const ds = fmtDayInput(d);
+    if (row === 0 && cells.length) col++;
+    const mon = ds.slice(0, 7);
+    if (mon !== lastMon && d >= first && d <= last) {
+      lastMon = mon;
+      const m = Number(ds.slice(5, 7));
+      months.push(`<span style="left:${col * 15}px">${(!months.length || m === 1) ? ds.slice(0, 4) + "年" : ""}${m}月</span>`);
+    }
+    const info = byDate.get(ds);
+    const inRange = d >= first && d <= last;
+    const cls = ["cal-cell", inRange ? "l" + lvl(val(info)) : "out", info ? "has" : "", ds === curDay ? "cur" : ""].join(" ");
+    const tip = info ? `${ds} 周${weekOf(ds)} · ${info.count} 条 · 老师 ${info.teacher}` : `${ds} 周${weekOf(ds)} · 无消息`;
+    cells.push(`<div class="${cls}" style="grid-column:${col + 1};grid-row:${row + 1}" title="${tip}"${info ? ` onclick="toggleCal(false);jumpToDay('${ds}')"` : ""}></div>`);
+  }
+  const tot = DAYS.reduce((a, d) => a + d.count, 0);
+  body.innerHTML = `
+    <div class="cal-scroll" id="calScroll">
+      <div class="cal-months" style="width:${(col + 1) * 15}px">${months.join("")}</div>
+      <div class="cal-grid-wrap">
+        <div class="cal-week"><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span>日</span></div>
+        <div class="cal-grid">${cells.join("")}</div>
+      </div>
+    </div>
+    <div class="cal-foot"><span>${DAYS.length} 天有消息 · 共 ${tot} 条</span>
+      <span class="cal-legend">少 <i class="cal-cell l1"></i><i class="cal-cell l2"></i><i class="cal-cell l3"></i><i class="cal-cell l4"></i> 多</span></div>`;
+  // 滚到当前日期那一列
+  const sc = document.getElementById("calScroll");
+  const has = sc.querySelectorAll(".cal-cell.has");
+  const cur = sc.querySelector(".cal-cell.cur") || has[has.length - 1];
+  sc.scrollLeft = cur ? Math.max(0, cur.offsetLeft - sc.clientWidth / 2) : sc.scrollWidth;
+}
+
+// ---------- 实时消息 ----------
+function isLiveView() { return !searchMode; }
+
+function onRealtimeMessage(m) {
+  const key = msgKey(m);
+  if (!key || seenKeys.has(key)) return;
+  const isTeacherSide = (m.user_type === 3 || m.user_type === 4);
+  bumpDays(m, isTeacherSide);
+  const al = listOf(TL.all), tl = listOf(TL.teacher);
+  // 窗口停在最新处才直接接到底部；在翻历史（或看搜索结果）时不插，
+  // 消息后端已入库，滚到底时自然会从库里接上
+  if (!searchMode && !TL.all.hasNewer) {
+    tlAppend(TL.all, [m], true);
+    tlTrim(TL.all, "top");
+    followList(al);
+  } else {
+    TL.all.hasNewer = true;
+    // 人就停在底部（例如刚同步完还没接上）：顺手把缺的接上，免得一直「卡住不来新消息」
+    if (!searchMode && _follow.allList) tlLoadNewer(TL.all).then(() => followList(al));
+  }
+  if (isTeacherSide) {
+    if (!TL.teacher.hasNewer && !TL.teacher.keys.has(key)) {
+      tlAppend(TL.teacher, [m]);
+      tlTrim(TL.teacher, "top");
+      followList(tl);
+    } else TL.teacher.hasNewer = true;
+  }
+  if (!searchMode && !(_follow.allList && !TL.all.hasNewer)) {
+    pendingNew++;
+    document.getElementById("newMsgCount").textContent = pendingNew;
+    document.getElementById("newMsgHint").style.display = "block";
+  }
+}
+
+// ---------- 搜索 ----------
+function enterSearch() {
+  if (searchMode) return;
+  const el = firstVisible(listOf(TL.all));
+  _preSearch = { ts: el ? +el.dataset.ts : 0, bottom: _follow.allList && !TL.all.hasNewer };
+  togglePinPanel(false);
+  toggleCal(false);
+  searchMode = true;
+  document.getElementById("scrub").style.display = "none";
+}
+/** 退出搜索状态：右栏画回时间线窗口（位置由调用方再定） */
+function leaveSearch() {
+  const was = searchMode;
+  searchMode = false;
+  if (was) { renderMessages(TL.all.msgs, listOf(TL.all), "", false); tlHint(TL.all); }
+  searchKeyword = "";
+  document.getElementById("clearBtn").classList.remove("show");
+  document.getElementById("allCount").title = "";
+  drawScrub();
+}
+function clearSearch() {
+  const was = searchMode;
+  leaveSearch();
+  document.getElementById("searchInput").value = "";
+  document.getElementById("userIdInput").value = "";
+  if (!was) return;
+  const al = listOf(TL.all);
+  const p = _preSearch;
+  _preSearch = null;
+  if (!p || p.bottom) pinToBottom(al);
+  else positionAt(TL.all, p.ts, "first");
+  requestAnimationFrame(afterAllMoved);
+}
+/** 搜索结果里点时间：回到时间线，定位到这条消息的上下文 */
+function gotoContext(ts) {
+  if (!ts) return;
+  leaveSearch();
+  _preSearch = null;
+  _linkMuteUntil = Date.now() + 1200;
+  Promise.all([
+    tlJump(TL.all, ts, "first", { highlight: true, center: true }),
+    tlJump(TL.teacher, ts, "last"),
+  ]).then(afterAllMoved);
+}
+function applySearchPreset(v) {
+  const s = document.getElementById("searchStart"), e = document.getElementById("searchEnd");
+  if (!v) { s.value = ""; e.value = ""; }
+  else {
+    const d = new Date();
+    d.setDate(d.getDate() - (Number(v) - 1));
+    s.value = fmtDayInput(d);
+    e.value = "";
+  }
+  onSearchDateChange();
+}
 
 // ===================== 发送 =====================
 let pendingImage = null;
@@ -1631,62 +2466,7 @@ function connectWS() {
 }
 setInterval(() => { if (ws && ws.readyState === 1) ws.send("ping"); }, 45000);
 
-/** 只有这两种视图弹「N 条新消息」：默认「最新」视图（没点任何范围按钮）和日历的「今天」。
- *  近3天/近7天/全部属于读历史的范围视图，新消息照常静默插进列表底部，但不弹提示。 */
-function isLiveView() {
-  if (searchMode) return false;
-  if (currentDay) return currentDay === todayStr();
-  return !document.querySelector("[data-range].active");
-}
 
-function onRealtimeMessage(m) {
-  const key = msgKey(m);
-  if (!key || seenKeys.has(key)) return;
-  if (m.id && allMessages.some(x => x.id === m.id)) return;
-  seenKeys.add(key);
-  const isTeacherSide = (m.user_type === 3 || m.user_type === 4);
-
-  // 只在「当前视图确实包含这条消息」时才插进列表。
-  // 正在通读历史某天（或看搜索结果）时既不插列表、也不弹「N 条新消息」——
-  // 消息后端已入库，切回今天自然能拉到，别打断阅读。
-  const viewingLive = !searchMode && (!currentDay || currentDay === todayStr());
-  if (!viewingLive) return;
-
-  allMessages.push(m);
-  allMessages.sort((a, b) => (a.ts || 0) - (b.ts || 0));
-  if (isTeacherSide) teacherMessages.push(m);
-
-  const list = document.getElementById("allList");
-  if (_renderStates.has(list.id)) {          // 分批渲染未结束时直接改数据源
-    _renderStates.get(list.id).msgs = allMessages;
-  }
-  const frag = document.createDocumentFragment();
-  renderMsg(m, frag, searchKeyword);
-  const node = frag.firstElementChild;
-  node.classList.add("is-new");
-  setTimeout(() => node.classList.remove("is-new"), 1800);
-  list.appendChild(node);
-  if (isTeacherSide) {
-    const tl = document.getElementById("teacherList");
-    if (_renderStates.has(tl.id)) _renderStates.get(tl.id).msgs = teacherMessages;
-    const f2 = document.createDocumentFragment();
-    renderMsg(m, f2, "");
-    tl.appendChild(f2.firstElementChild);
-    document.getElementById("teacherCount").textContent = teacherMessages.length + " 条";
-  }
-  document.getElementById("allCount").textContent = "全部 " + allMessages.length + " 条";
-  loadNickCounts();
-  // 自动跟随只动「本来就贴底」的那一栏，另一栏保持用户的位置；
-  // 以前这里是 if (stickToBottom) scrollToBottom(true) → 两栏一起被拽到底。
-  followList(list);
-  if (isTeacherSide) followList(document.getElementById("teacherList"));
-  if (isLiveView() && !_follow.allList) {
-    pendingNew++;
-    const hint = document.getElementById("newMsgHint");
-    document.getElementById("newMsgCount").textContent = pendingNew;
-    hint.style.display = "block";
-  }
-}
 
 function updateImStatus(d) {
   const dot = document.getElementById("imDot");
@@ -1736,6 +2516,7 @@ async function loadStatus() {
   else if (d.sync && d.sync.detail && !d.sync.running && d.sync.done) hideSyncBar();
   const banner = document.getElementById("warnBanner");
   const warns = [];
+  _hasToken = !!d.has_token;
   if (!d.has_token) warns.push('未登录（只能浏览本地已同步消息）');
   if (!d.im.state || d.im.state === "off") warns.push("实时消息未启用");
   if (d.im.state === "login_failed") warns.push("IM 凭证失效（userSig 过期）");
@@ -1948,7 +2729,8 @@ function fmtDur(sec) {
 connectWS();
 // loadToday 以前是同步函数（返回 undefined），这里链式 .then 会直接抛 TypeError，
 // 把后面的 loadMediaStatus / setInterval 全部带崩。现在让它返回 Promise，并各自抛不误。
-loadToday().catch(e => console.warn("加载今日失败：", e)).finally(loadStatus);
+refreshDays();
+gotoLatest().catch(e => console.warn("加载最新消息失败：", e)).finally(loadStatus);
 loadPins();                      // 置顶是房间级的，启动拉一次即可
 loadMediaStatus();               // 与消息加载无关，单独发起
 setInterval(() => { loadStatus(); }, 30000);
