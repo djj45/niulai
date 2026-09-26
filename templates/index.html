@@ -37,6 +37,21 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 .topbar input[type="date"] { padding: 3px 6px; border: 1px solid var(--border);
   border-radius: 4px; font-size: 13px; }
 .topbar .cal-group button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+/* 老师新消息提醒：按钮 + 下拉设置面板 */
+.notify-wrap { position: relative; }
+.topbar button.notify-on { color: var(--accent); border-color: var(--accent); }
+.notify-panel { display: none; position: absolute; top: calc(100% + 6px); right: 0; width: 280px; z-index: 200;
+  background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.18); white-space: normal; font-size: 13px; }
+.notify-panel.show { display: block; }
+.notify-panel .np-title { font-weight: 600; margin-bottom: 4px; }
+.notify-panel label { display: flex; align-items: center; gap: 6px; padding: 4px 0; cursor: pointer; }
+.notify-panel .np-sub { color: var(--muted); font-size: 11px; }
+.notify-panel .np-state { font-size: 12px; line-height: 1.55; margin: 4px 0; color: #d46b08; }
+.notify-panel .np-state.ok { color: var(--muted); }
+.notify-panel .np-state:empty { display: none; }
+.notify-panel .np-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.notify-panel .np-note { color: var(--muted); font-size: 11px; line-height: 1.5; margin-top: 6px; }
 .topbar .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 5px; }
 .topbar .dot { width: 9px; height: 9px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
 .dot.on { background: #0f9d58; box-shadow: 0 0 0 3px rgba(15,157,88,.15); }
@@ -378,6 +393,19 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
   <button onclick="syncFull()" id="fullSyncBtn" title="全量同步：翻到最早">⏬ 全量</button>
   <button onclick="showVideos()" id="videoBtn" title="老师的视频课（栏目与回放），弹窗内直接播放">📺 视频</button>
   <button onclick="showArticles()" id="articleBtn" title="老师的全部研选文章，点击阅读">📚 文章</button>
+  <span class="notify-wrap">
+    <button id="notifyBtn" onclick="toggleNotifyPanel()" title="老师发新消息时提醒：系统通知 / 提示音">🔕 提醒</button>
+    <div class="notify-panel" id="notifyPanel">
+      <div class="np-title">老师新消息提醒</div>
+      <label><input type="checkbox" id="npSys" onchange="setNotify('sys', this.checked)"> 系统通知
+        <span class="np-sub">Windows / macOS 通知中心</span></label>
+      <label><input type="checkbox" id="npSound" onchange="setNotify('sound', this.checked)"> 提示音</label>
+      <label><input type="checkbox" id="npFocus" onchange="setNotify('focus', this.checked)"> 正在看这个页面时也弹通知</label>
+      <div class="np-state" id="npState"></div>
+      <div class="np-foot"><button onclick="testNotify()">试一下</button></div>
+      <div class="np-note">这个页面（标签页）要开着才收得到，最小化、切到别的程序都行。只提醒实时推来的老师消息，补同步的历史消息不提醒。</div>
+    </div>
+  </span>
   <button onclick="backupDB()" title="把 SQLite 消息库复制到 data/backups/（图片缓存不在内，想留自己拷 data/cache）">💾 备份</button>
   <button onclick="showStats()" title="各天消息数、老师消息分类、媒体本地化进度、后台同步节奏">📊 统计</button>
   <button onclick="logout()" id="logoutBtn" title="清掉本机保存的登录凭证（不影响消息库），回到登录页">🚪 退出</button>
@@ -993,6 +1021,7 @@ document.addEventListener("click", e => {
   if (panel.style.display === "block" && !e.target.closest("#pinPanel, #pinBar")) togglePinPanel(false);
   const cal = document.getElementById("calPop");
   if (cal.style.display === "block" && !e.target.closest("#calPop, #dayBtn")) toggleCal(false);
+  if (!e.target.closest(".notify-wrap")) document.getElementById("notifyPanel").classList.remove("show");
 });
 function closePinText() { document.getElementById("pinTextModal").style.display = "none"; }
 
@@ -2373,6 +2402,7 @@ function onRealtimeMessage(m) {
   const key = msgKey(m);
   if (!key || seenKeys.has(key)) return;
   const isTeacherSide = isTeacherMsg(m);
+  if (isTeacherSide) notifyTeacher(m);
   bumpDays(m, isTeacherSide);
   const al = listOf(TL.all), tl = listOf(TL.teacher);
   // 窗口停在最新处才直接接到底部；在翻历史（或看搜索结果）时不插，
@@ -2593,6 +2623,155 @@ document.addEventListener("paste", ev => {
     }
   }
 });
+
+// ===================== 老师新消息提醒 =====================
+// 系统通知用浏览器的 Notification（在 Windows / macOS 上就是系统原生通知），
+// 提示音用 Web Audio 现场合成（不用音频文件）。设置存在本机浏览器里。
+const NOTIFY = { sys: false, sound: false, focus: false };
+try { Object.assign(NOTIFY, JSON.parse(localStorage.getItem("niulai.notify") || "{}")); } catch (e) {}
+function saveNotify() { try { localStorage.setItem("niulai.notify", JSON.stringify(NOTIFY)); } catch (e) {} }
+function notifySupported() { return "Notification" in window && window.isSecureContext; }
+function notifyGranted() { return notifySupported() && Notification.permission === "granted"; }
+
+function toggleNotifyPanel(force) {
+  const p = document.getElementById("notifyPanel");
+  const show = force != null ? force : !p.classList.contains("show");
+  p.classList.toggle("show", show);
+  if (show) renderNotifyPanel();
+}
+function renderNotifyPanel() {
+  const sysOn = NOTIFY.sys && notifyGranted();
+  document.getElementById("npSys").checked = sysOn;
+  document.getElementById("npSound").checked = NOTIFY.sound;
+  document.getElementById("npFocus").checked = NOTIFY.focus;
+  document.getElementById("npFocus").disabled = !sysOn;
+  const st = document.getElementById("npState");
+  let msg = "", ok = false;
+  if (!notifySupported()) msg = "当前地址用不了系统通知（要用 https 或 127.0.0.1 打开）";
+  else if (Notification.permission === "denied")
+    msg = "浏览器拦截了通知：点地址栏左边的站点图标 → 通知 → 允许，再回来勾选";
+  else if (sysOn) {
+    ok = true;
+    msg = "收不到？检查 macOS「系统设置 → 通知 → 你的浏览器」或 Windows「设置 → 系统 → 通知」里是否允许，勿扰 / 专注模式是否关着";
+  }
+  if (NOTIFY.sound && !audioReady()) { msg = (msg ? msg + "\n" : "") + "提示音待激活：浏览器要求先点一下页面才能出声（刷新后点任意处即可）"; ok = false; }
+  st.textContent = msg;
+  st.className = "np-state" + (ok ? " ok" : "");
+  st.style.whiteSpace = "pre-line";
+  const b = document.getElementById("notifyBtn");
+  const on = sysOn || NOTIFY.sound;
+  b.textContent = on ? "🔔 提醒" : "🔕 提醒";
+  b.classList.toggle("notify-on", on);
+  b.title = on ? `老师新消息提醒：${[sysOn && "系统通知", NOTIFY.sound && "提示音"].filter(Boolean).join(" + ")}` : "老师新消息提醒（已关）";
+}
+async function setNotify(k, on) {
+  if (k === "sys" && on) {
+    if (!notifySupported()) on = false;
+    else if (Notification.permission !== "granted") {
+      try { on = (await Notification.requestPermission()) === "granted"; } catch (e) { on = false; }
+    }
+  }
+  if (k === "sound" && on) unlockAudio();          // 这次勾选本身就是一次点击，趁机解锁声音
+  NOTIFY[k] = on;
+  saveNotify();
+  renderNotifyPanel();
+}
+
+// ---- 提示音 ----
+let _actx = null;
+function audioReady() { return !!_actx && _actx.state === "running"; }
+function unlockAudio() {
+  try {
+    if (!_actx) _actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_actx.state === "suspended") _actx.resume().then(() => {
+      if (document.getElementById("notifyPanel").classList.contains("show")) renderNotifyPanel();
+    });
+  } catch (e) {}
+}
+// 浏览器的自动播放限制：页面没被点过就不许出声。刷新后第一次点击 / 按键时顺手解锁
+for (const ev of ["pointerdown", "keydown"])
+  document.addEventListener(ev, () => { if (NOTIFY.sound && !audioReady()) unlockAudio(); }, true);
+/** 「叮-咚」两声，约 0.6 秒；出不了声返回 false */
+function playChime() {
+  if (!audioReady()) return false;
+  const t0 = _actx.currentTime;
+  for (const [f, dt] of [[880, 0], [1318.5, 0.13]]) {
+    const o = _actx.createOscillator(), g = _actx.createGain();
+    o.type = "sine";
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t0 + dt);
+    g.gain.exponentialRampToValueAtTime(0.3, t0 + dt + 0.015);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.45);
+    o.connect(g).connect(_actx.destination);
+    o.start(t0 + dt);
+    o.stop(t0 + dt + 0.5);
+  }
+  return true;
+}
+
+// ---- 通知内容 ----
+function teacherMsgText(m) {
+  let t;
+  if (m.msg_type === 1) t = "[图片]";
+  else if (m.msg_type === 2) {
+    let a = {};
+    try { a = JSON.parse(m.msg_content || "{}"); } catch (e) {}
+    t = "[文章] " + (a.title || a.brief || "");
+  } else t = String(m.msg_content || "").replace(/\s+/g, " ").trim() || "[消息]";
+  if (t.length > 140) t = t.slice(0, 140) + "…";
+  const q = m.quote;
+  if (q && q.nickName) {
+    const qt = q.msgType === 1 ? "[图片]" : String(q.msgContent || "").replace(/\s+/g, " ").slice(0, 40);
+    t += `\n↳ 回复 ${q.nickName}：${qt}`;
+  }
+  return t;
+}
+
+// ---- 触发 ----
+const _baseTitle = document.title;
+let _unseenTeacher = 0, _lastChime = 0;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") { _unseenTeacher = 0; document.title = _baseTitle; }
+});
+function notifyTeacher(m, force) {
+  const sysOn = NOTIFY.sys && notifyGranted();
+  if (!sysOn && !NOTIFY.sound) return;
+  if (!force && m.ts && Date.now() / 1000 - m.ts > 600) return;    // 断线重连补推的旧消息不提醒
+  const looking = document.visibilityState === "visible" && document.hasFocus();
+  if (!looking) {                                   // 标签页标题上挂个未读数，切回来清零
+    _unseenTeacher++;
+    document.title = `(${_unseenTeacher}) 老师新消息 · ${_baseTitle}`;
+  }
+  if (NOTIFY.sound && (force || Date.now() - _lastChime > 1500)) {   // 老师连发几条只响一次
+    if (playChime()) _lastChime = Date.now();
+  }
+  if (sysOn && (!looking || NOTIFY.focus || force)) {
+    try {
+      const av = avatarUrl(m);
+      const n = new Notification(`🎓 ${m.nick_name || "老师"}${m.to_user_id > 0 ? " 回复" : ""}`, {
+        body: teacherMsgText(m),
+        tag: "niulai-teacher-" + msgKey(m),
+        icon: av ? new URL(av, location.href).href : undefined,
+        // 声音统一由「提示音」管（连发时 1.5 秒内只响一次），系统通知自己不出声；
+        // 只有提示音还没激活（刷新后没点过页面）时，才让系统通知的声音顶上
+        silent: !NOTIFY.sound || audioReady(),
+      });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+        if (m.id) jumpToMessage(String(m.id), m.msg_date);
+      };
+    } catch (e) { console.warn("系统通知失败", e); }
+  }
+}
+function testNotify() {
+  if (NOTIFY.sound) unlockAudio();
+  const now = Math.floor(Date.now() / 1000);
+  notifyTeacher({ nick_name: "老师（测试）", msg_type: 0, msg_content: "这是一条测试提醒：老师发新消息时就会这样提示你。", ts: now }, true);
+  if (!(NOTIFY.sys && notifyGranted()) && !NOTIFY.sound) toast("先勾选「系统通知」或「提示音」");
+  setTimeout(renderNotifyPanel, 300);
+}
+renderNotifyPanel();
 
 // ===================== 图片放大 =====================
 (function initLightbox() {
