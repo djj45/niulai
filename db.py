@@ -654,11 +654,10 @@ def query_messages(conn, room_id: int | None = None, date: str = "", start_ts: i
     return [_msg_to_dict(r) for r in conn.execute(sql, params).fetchall()]
 
 
-def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int = 0,
-                    start_date: str = "", end_date: str = "", size: int = 300):
-    """返回 (rows, total)：rows 是命中的**最新 size 条**（时间正序展示），
-    total 是不带 LIMIT 的真实命中数。以前 ORDER BY ts ASC 直接 LIMIT——
-    命中一多只能看到最旧的几页（实测「大金」577 条只显示到 09-17）。"""
+def search_filter(keyword: str = "", user_id: int = 0,
+                  start_date: str = "", end_date: str = "") -> tuple[str, list]:
+    """搜索条件 → (SQL 片段, 参数)。搜索结果的时间线翻页、按天汇总（滑轨/日历）、
+    总数三处共用这一份，保证口径一致。"""
     # 前端把日期传成 20260920（parseRange 去掉了横线），库里 msg_date 是
     # 2026-09-20 08:11:23 —— 不归一的话字符串比较里 '-'<'0'，全部消息都被滤掉，
     # 表现就是「带日期的搜索永远暂无消息」。这里两种输入都接受。
@@ -667,25 +666,28 @@ def search_messages(conn, keyword: str, room_id: int | None = None, user_id: int
         return f"{d8[:4]}-{d8[4:6]}-{d8[6:8]}" if len(d8) == 8 else ""
 
     sd, ed = _d(start_date), _d(end_date)
-    where = " WHERE msg_content LIKE ?"
-    params: list = [f"%{keyword}%"]
-    if room_id:
-        where += " AND room_id=?"
-        params.append(room_id)
+    sql, params = "", []
+    if keyword:
+        sql += " AND msg_content LIKE ?"
+        params.append(f"%{keyword}%")
     if user_id:
-        where += " AND user_id=?"
+        sql += " AND user_id=?"
         params.append(user_id)
     if sd:
-        where += " AND msg_date>=?"
+        sql += " AND msg_date>=?"
         params.append(sd + " 00:00:00")
     if ed:
-        where += " AND msg_date<=?"
+        sql += " AND msg_date<=?"
         params.append(ed + " 23:59:59")
-    total = conn.execute("SELECT COUNT(*) FROM messages" + where, params).fetchone()[0]
-    rows = conn.execute("SELECT * FROM messages" + where
-                        + " ORDER BY ts DESC LIMIT ?", params + [size]).fetchall()
-    rows.reverse()                      # 取的是最新 N 条，展示仍按时间正序
-    return [_msg_to_dict(r) for r in rows], total
+    return sql, params
+
+
+def count_where(conn, room_id: int | None = None, where: str = "", where_params: list | None = None) -> int:
+    sql, params = " WHERE 1=1" + where, list(where_params or [])
+    if room_id:
+        sql += " AND room_id=?"
+        params.append(room_id)
+    return conn.execute("SELECT COUNT(*) FROM messages" + sql, params).fetchone()[0]
 
 
 # ===================== 研选文章（本地缓存） =====================
@@ -747,15 +749,17 @@ def _tl_rows(conn, where: str, params: list, order: str, limit: int) -> list:
 
 def timeline(conn, room_id: int | None = None, only_teacher: bool = False,
              at_ts: int = 0, older: str = "", newer: str = "",
-             size: int = 500, before: int = 300, after: int = 300) -> dict:
+             size: int = 500, before: int = 300, after: int = 300,
+             where: str = "", where_params: list | None = None) -> dict:
     """连续时间线取数。四种读法（结果一律时间正序）：
       * older=<cur>：取游标之前（更早）的 size 条
       * newer=<cur>：取游标之后（更新）的 size 条
       * at_ts=<ts>：取 ts 之前 before 条 + ts 之后（含）after 条
       * 都不给：取最新的 size 条
     has_older / has_newer 按「是否取满」判断，边界上可能多判一次 True，下次取空就会变 False。
+    where/where_params：额外过滤（搜索结果也按时间线翻，见 search_filter）。
     """
-    base, bp = "", []
+    base, bp = where or "", list(where_params or [])
     if room_id:
         base += " AND room_id=?"
         bp.append(room_id)
@@ -811,11 +815,14 @@ def locate_message(conn, msg_id: int, room_id: int | None = None) -> dict | None
     return {"ts": r["ts"] or 0, "msg_date": r["msg_date"] or ""} if r else None
 
 
-def days_summary(conn, room_id: int | None = None) -> list:
-    """每天一行：日期、消息数、老师消息数、当天首末条的 ts（滑轨/热力日历用）。"""
-    where, params = "", []
+def days_summary(conn, room_id: int | None = None,
+                 where_extra: str = "", where_params: list | None = None) -> list:
+    """每天一行：日期、消息数、老师消息数、当天首末条的 ts（滑轨/热力日历用）。
+    where_extra 给了就只统计符合条件的（搜索结果的滑轨/日历：每天命中几条）。"""
+    where, params = " WHERE 1=1" + (where_extra or ""), list(where_params or [])
     if room_id:
-        where, params = " WHERE room_id=?", [room_id]
+        where += " AND room_id=?"
+        params.append(room_id)
     rows = conn.execute(
         "SELECT substr(msg_date,1,10) AS day, COUNT(*) AS cnt, "
         "SUM(CASE WHEN user_type IN (3,4) THEN 1 ELSE 0 END) AS tcnt, "

@@ -1608,18 +1608,35 @@ async def api_days():
 
 @app.route("/api/messages/search")
 async def api_search():
+    """搜索结果也是一条连续时间线：翻页参数同 /api/timeline（at / older / newer / size /
+    before / after，都不给 = 最新 size 条）。days=1 时另附 total（真实命中数）和
+    days（每天命中几条，右侧滑轨 / 热力日历用）——几个月的命中也能按天定位。
+    type=teacher：只要老师的命中（联动时老师栏显示）。"""
     c = cfg()
     keyword = request.args.get("keyword", "").strip()
     user_id = int(request.args.get("user_id") or 0)
     if not keyword and not user_id:
         return jsonify({"error": "需要 keyword 或 user_id"}), 400
     room_id = int(request.args.get("room_id") or c.get("room_id") or 0)
-    size = min(int(request.args.get("size") or 300), 2000)
-    with _db_lock:
-        msgs, total = db.search_messages(conn, keyword or "", room_id or None, user_id=user_id,
-                                         start_date=request.args.get("start_date", ""),
-                                         end_date=request.args.get("end_date", ""), size=size)
-    return jsonify({"total": total, "messages": msgs, "truncated": total > len(msgs)})
+    where, wp = db.search_filter(keyword, user_id,
+                                 request.args.get("start_date", ""), request.args.get("end_date", ""))
+    try:
+        with _db_lock:
+            out = db.timeline(conn, room_id or None,
+                              only_teacher=request.args.get("type", "all") == "teacher",
+                              at_ts=int(request.args.get("at") or 0),
+                              older=request.args.get("older", ""),
+                              newer=request.args.get("newer", ""),
+                              size=max(1, min(int(request.args.get("size") or 500), 3000)),
+                              before=max(0, min(int(request.args.get("before") or 300), 3000)),
+                              after=max(1, min(int(request.args.get("after") or 300), 3000)),
+                              where=where, where_params=wp)
+            if request.args.get("days"):
+                out["total"] = db.count_where(conn, room_id or None, where, wp)
+                out["days"] = db.days_summary(conn, room_id or None, where, wp)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(out)
 
 
 @app.route("/api/stats")

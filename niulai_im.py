@@ -146,7 +146,7 @@ def normalize_group_message(group_msg: dict) -> dict:
     所以这里把 private_message_flag / vip_user / audit_status 写成中立默认值，
     等下一次 REST 同步把真实值覆盖回来（420+ 条 REST 记录里这三个字段
     分别全是 0/0/1，说明 IM 那边就是占位值）。原始值仍存在 raw 里。
-    真正可信的「老师回复了谁」信号是 user_type=4 且 to_user_id>0。
+    真正可信的「老师回复了谁」信号是 user_type 为 3/4（老师）且 to_user_id>0。
     """
     raw = _parse_business_payload(group_msg)
     gi = group_msg.get("GroupInfo") or {}
