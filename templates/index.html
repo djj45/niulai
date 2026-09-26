@@ -294,11 +294,19 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 
 /* 图片放大 */
 .lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.9);
-  z-index: 9999; justify-content: center; align-items: center; overflow: hidden; }
-.lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 4px;
+  z-index: 9999; justify-content: center; align-items: center; overflow: hidden; outline: none;
+  padding-bottom: 64px; box-sizing: border-box; }   /* 底部留给缩放按钮和提示，一屏的图不被挡住 */
+/* 缩放 / 平移全靠 transform: translate(平移，屏幕像素) scale(倍数)，以图片中心为原点 */
+.lightbox img { max-width: 92vw; max-height: calc(100vh - 100px); border-radius: 4px;
   transform-origin: center center; cursor: grab; user-select: none; -webkit-user-drag: none; }
 .lightbox img.dragging { cursor: grabbing; }
-.lightbox-hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+.lb-bar { position: absolute; bottom: 34px; left: 50%; transform: translateX(-50%); display: flex;
+  align-items: center; gap: 2px; padding: 3px 6px; border-radius: 18px; background: rgba(40,40,40,.85); }
+.lb-bar button { min-width: 30px; height: 28px; padding: 0 6px; border: 0; border-radius: 14px;
+  background: transparent; color: #fff; font-size: 17px; line-height: 28px; cursor: pointer; }
+.lb-bar button:hover { background: rgba(255,255,255,.18); }
+.lb-bar .lb-pct { min-width: 58px; font-size: 12px; }
+.lightbox-hint { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); white-space: nowrap;
   color: rgba(255,255,255,.6); font-size: 12px; pointer-events: none; }
 
 /* 弹窗通用 */
@@ -483,9 +491,14 @@ body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
 </div>
 
 <!-- 图片放大 -->
-<div class="lightbox" id="lightbox">
+<div class="lightbox" id="lightbox" tabindex="-1">
   <img id="lightboxImg" src="" alt="">
-  <div class="lightbox-hint">Ctrl/⌘+滚轮缩放 · 滚轮上下移动 · 拖动移动 · 双击复位 · 点击空白关闭</div>
+  <div class="lb-bar">
+    <button id="lbOut" title="缩小（-）">−</button>
+    <button id="lbPct" class="lb-pct" title="复原（0）">100%</button>
+    <button id="lbIn" title="放大（+）">+</button>
+  </div>
+  <div class="lightbox-hint">双指捏合 / Ctrl+滚轮 缩放 · 拖动或双指滑动 移动 · 双击 放大/复原 · Esc 或点空白 关闭</div>
 </div>
 
 <!-- 统计弹窗 -->
@@ -701,17 +714,29 @@ async function openArticle(articleId) {
       (m, a, u, z) => a + location.origin + mediaUrl(u, "image") + z);
     const html = `<!doctype html><meta charset="utf-8">
       <style>body{margin:16px auto;max-width:680px;font:15px/1.7 -apple-system,"PingFang SC",sans-serif;color:#222;word-break:break-word}
-      img{max-width:100%;height:auto} table{max-width:100%}</style>
+      img{max-width:100%;height:auto;cursor:zoom-in} table{max-width:100%}</style>
       ${bodyHtml}`;
     const body = document.getElementById("articleBody");
     body.innerHTML = "";
     const frame = document.createElement("iframe");
-    frame.setAttribute("sandbox", "");
+    // allow-same-origin：让外层能给正文挂点击（点图片放大）；不给 allow-scripts，正文自己仍跑不了脚本
+    frame.setAttribute("sandbox", "allow-same-origin");
     frame.title = "文章正文";
     frame.style.cssText = "flex:1;width:100%;border:0;border-radius:6px;background:#fff";
     if (_articleBlobUrl) URL.revokeObjectURL(_articleBlobUrl);
     _articleBlobUrl = URL.createObjectURL(new Blob([html], { type: "text/html" }));
     frame.src = _articleBlobUrl;
+    frame.addEventListener("load", () => {
+      const doc = frame.contentDocument;
+      if (!doc) return;
+      doc.addEventListener("click", ev => {
+        const im = ev.target.closest && ev.target.closest("img");
+        if (!im) return;
+        ev.preventDefault();                 // 图片外面包了链接也别跳走
+        openLightbox(im.currentSrc || im.src);
+      });
+      doc.addEventListener("keydown", ev => { if (ev.key === "Escape") closeArticle(); });
+    });
     body.appendChild(frame);
   } catch (e) {
     if (seq !== _articleSeq) return;
@@ -2573,41 +2598,80 @@ document.addEventListener("paste", ev => {
 (function initLightbox() {
   const lb = document.getElementById("lightbox");
   const img = document.getElementById("lightboxImg");
-  lb._zoom = 1; lb._dx = 0; lb._dy = 0;
+  const pct = document.getElementById("lbPct");
+  const MIN = 0.5, MAX = 10;
+  let z = 1, tx = 0, ty = 0;          // 倍数、平移（屏幕像素）
   function apply() {
-    img.style.transform = `scale(${lb._zoom}) translate(${lb._dx}px, ${lb._dy}px)`;
-    if (lb._zoom > 1) {
-      img.style.maxWidth = "none"; img.style.maxHeight = "none";
-      img.style.transformOrigin = "top center";
-    } else {
-      img.style.maxWidth = "92vw"; img.style.maxHeight = "92vh";
-      img.style.transformOrigin = "center center";
-    }
+    img.style.transform = `translate(${tx}px, ${ty}px) scale(${z})`;
+    pct.textContent = Math.round(z * 100) + "%";
   }
-  lb.addEventListener("click", e => { if (e.target === lb) lb.style.display = "none"; });
-  img.addEventListener("dblclick", e => { e.stopPropagation(); lb._zoom = 1; lb._dx = 0; lb._dy = 0; apply(); });
+  /** 以屏幕上 (cx, cy) 为中心缩放到 nz：光标下那个像素保持不动 */
+  function zoomAt(nz, cx, cy) {
+    nz = Math.max(MIN, Math.min(MAX, nz));
+    if (nz === z) return;
+    const r = img.getBoundingClientRect();
+    const ox = r.left + r.width / 2 - tx, oy = r.top + r.height / 2 - ty;    // 没平移时图片中心
+    if (cx == null) { cx = innerWidth / 2; cy = innerHeight / 2; }
+    const k = nz / z;
+    tx = (cx - ox) - k * (cx - ox - tx);
+    ty = (cy - oy) - k * (cy - oy - ty);
+    z = nz;
+    if (z <= 1) { tx = 0; ty = 0; }   // 缩回一屏以内：居中
+    apply();
+  }
+  function reset() { z = 1; tx = 0; ty = 0; apply(); }
+  lb._reset = reset;
+  lb._zoomBy = f => zoomAt(z * f);
+
+  // 松开拖动时鼠标停在黑底上也会触发一次 click，别把它当成「点空白关闭」
+  let moved = false;
+  lb.addEventListener("click", e => { if (e.target === lb && !moved) lb.style.display = "none"; moved = false; });
+  img.addEventListener("dblclick", e => {
+    e.stopPropagation();
+    if (z !== 1) reset(); else zoomAt(2.5, e.clientX, e.clientY);
+  });
   lb.addEventListener("wheel", e => {
     e.preventDefault();
-    if (e.ctrlKey || e.metaKey) lb._zoom = Math.max(.2, Math.min(12, lb._zoom * (e.deltaY < 0 ? 1.2 : .83)));
-    else lb._dy -= e.deltaY / 5;
-    apply();
+    let dx = e.deltaX, dy = e.deltaY;
+    if (e.deltaMode === 1) { dx *= 33; dy *= 33; }                 // 按行滚（Firefox 鼠标）
+    else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+    if (e.ctrlKey || e.metaKey) {
+      // 触摸板捏合 = 带 ctrlKey 的 wheel：每次 deltaY 只有几个单位，但一秒几十次；
+      // 鼠标 Ctrl+滚轮：一格 ~100。按幅度连续缩放、单次封顶 ±20%，两种都顺手。
+      // （以前每个事件固定 ×1.2，捏一下就几十次 ×1.2，直接飞到最大）
+      const step = Math.max(-20, Math.min(20, dy));
+      zoomAt(z * Math.exp(-step * 0.01), e.clientX, e.clientY);
+    } else if (z > 1) {               // 放大后：双指滑动 / 滚轮 = 平移
+      tx -= dx; ty -= dy; apply();
+    }
   }, { passive: false });
   let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
   img.addEventListener("mousedown", e => {
-    drag = true; sx = e.clientX; sy = e.clientY; ox = lb._dx; oy = lb._dy;
+    if (e.button !== 0) return;
+    drag = true; moved = false; sx = e.clientX; sy = e.clientY; ox = tx; oy = ty;
     img.classList.add("dragging"); e.preventDefault();
   });
   document.addEventListener("mousemove", e => {
     if (!drag) return;
-    lb._dx = ox + (e.clientX - sx); lb._dy = oy + (e.clientY - sy); apply();
+    if (Math.abs(e.clientX - sx) + Math.abs(e.clientY - sy) > 3) moved = true;
+    tx = ox + (e.clientX - sx); ty = oy + (e.clientY - sy); apply();
   });
-  document.addEventListener("mouseup", () => { drag = false; img.classList.remove("dragging"); });
+  document.addEventListener("mouseup", () => { if (!drag) return; drag = false; img.classList.remove("dragging"); });
+  document.getElementById("lbIn").onclick = e => { e.stopPropagation(); zoomAt(z * 1.25); };
+  document.getElementById("lbOut").onclick = e => { e.stopPropagation(); zoomAt(z / 1.25); };
+  pct.onclick = e => { e.stopPropagation(); reset(); };
+  lb.addEventListener("keydown", e => {
+    if (e.key === "+" || e.key === "=") zoomAt(z * 1.25);
+    else if (e.key === "-" || e.key === "_") zoomAt(z / 1.25);
+    else if (e.key === "0") reset();
+  });
 })();
 function openLightbox(src) {
   const lb = document.getElementById("lightbox");
-  lb._zoom = 1; lb._dx = 0; lb._dy = 0;
+  lb._reset();
   document.getElementById("lightboxImg").src = src;
   lb.style.display = "flex";
+  lb.focus();       // 从文章 iframe 里点开时焦点在 iframe 里，拉回来 Esc / +- 才有效
 }
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") {
